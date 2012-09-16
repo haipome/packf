@@ -5,7 +5,7 @@
 
 # define BUF_PKG_LEN 8096
 
-void bin_dump(char *pkg, int len)
+void bin_dump(void *pkg, int len)
 {
     int i, j = 0;
 
@@ -14,7 +14,7 @@ void bin_dump(char *pkg, int len)
     {
         for (i = 0; i < len; ++i)
         {
-            printf("%02X  ", (uint8_t)(pkg[i]));
+            printf("%02X  ", ((uint8_t *)pkg)[i]);
             ++j;
             if (!(j % 20))
                  putchar('\n');
@@ -28,7 +28,6 @@ int main()
 {
     char pkg[BUF_PKG_LEN] = {0};
     int len;
-    char *p = pkg;
     
 # pragma pack(1)
     
@@ -41,13 +40,11 @@ int main()
     
 # pragma pack(0)
     
-    double F = 4.0;
     char a;
     short b;
     int c;
     float d;
     double e;
-    char h[20];
 
     struct b ast, ast2;
 
@@ -81,6 +78,12 @@ int main()
 
     len = pack(pkg, 0, "[[[]]]");
     bin_dump(pkg, len);
+
+    len = pack(pkg, 8096, "s", "hello world!");
+    bin_dump(pkg, len);
+    len = pack(pkg, 8096, "30s", "hello world!");
+    bin_dump(pkg, len);
+
 
     return 0;
 }

@@ -27,37 +27,23 @@ enum {
 };
 
 enum {
-    ERROR_BAD_PARAM = -1,
-    ERROR_NO_BUF = -2,
-    ERROR_NULL_POINTER = -3,
-    ERROR_NEED_NUM = -4,
-    ERROR_NOT_FORMAT = -5,
-    ERROR_EXPECT_FORMAT = -6,
-    ERROR_NOT_MATCH = -7,
-    ERROR_NO_DDWORD_ARG = -8,
+    ERROR_BAD_PARAM = -221,       /* 传入参数错误，指针为 NULL or max_len < 0 */
+    ERROR_NO_BUF = -222,          /* ptr 指向的存储区长度不够 */
+    ERROR_NULL_POINTER = -223,    /* 变参中指针有 NULL */
+    ERROR_NEED_NUM = -224,        /* as 类型必须前缀数字 */
+    ERROR_NOT_FORMAT = -225,      /* 未知 format 类型 */
+    ERROR_EXPECT_FORMAT = -226,   /* format 缺少参数 */
+    ERROR_NOT_MATCH = -227,       /* [] 不匹配 */
+    ERROR_NO_DDWORD_ARG = -228,   /* 32 位机不支持变参中传递 8 字节长整数 */
 };
 
-# define swap_ddword(x)  \
-   ((((x) & 0xff00000000000000llu) >> 56) | \
-    (((x) & 0x00ff000000000000llu) >> 40) | \
-    (((x) & 0x0000ff0000000000llu) >> 24) | \
-    (((x) & 0x0000ff0000000000llu) >> 24) | \
-    (((x) & 0x000000ff00000000llu) >> 8)  | \
-    (((x) & 0x00000000ff000000llu) << 8)  | \
-    (((x) & 0x0000000000ff0000llu) << 24) | \
-    (((x) & 0x000000000000ff00llu) << 40) | \
-    (((x) & 0x00000000000000ffllu) << 56) )
-
-static uint64_t endian_switch(uint64_t a)
+uint64_t endian_switch(uint64_t a)
 {
     if (BYTE_ORDER == BIG_ENDIAN)
         return a;
     else
         return swap_ddword(a);
 }
-
-# define htonll(x) endian_switch((x))
-# define ntohll(x) endian_switch((x))
 
 # define IF_LESS(x, n)  do                                                  \
                         {                                                   \
@@ -73,7 +59,7 @@ static uint64_t endian_switch(uint64_t a)
                     IF_LESS(*left_len, sizeof(type2));                      \
                     if (job == DO_PACK)                                     \
                     {                                                       \
-                        if (!n)                                             \
+                        if (n == -1)                                        \
                         {                                                   \
                             if (from == FROM_ARG)                           \
                                 val = va_arg(*va, type1);                   \
@@ -86,7 +72,8 @@ static uint64_t endian_switch(uint64_t a)
                         else                                                \
                         {                                                   \
                             val = (type1)(((type2 *)s)[i]);                 \
-                            if ((job == DO_PACK) && n && (from == FROM_PTR))\
+                            if ((job == DO_PACK) && (n != -1) &&            \
+                                    (from == FROM_PTR))                     \
                                 *locale += sizeof(type2);                   \
                         }                                                   \
                         *((type2 *)(*net)) = switch1((type2)val);           \
@@ -104,14 +91,14 @@ static uint64_t endian_switch(uint64_t a)
 static int process_data(char **net, int *left_len, int type, int n, \
                         int from, va_list *va, char **locale, int job)
 {
-    int i, array_num;
+    int i, array_num, slen;
     char *s, *d;
 
     int itmp;
     uint64_t itmp8;
     double ftmp;
 
-    if ((net == NULL || *net == NULL || n < 0 ) || (!va && !locale))
+    if ((!net || !(*net)) || (!va && (!locale || !(*locale))))
         return ERROR_BAD_PARAM;
 
     if (job == DO_PACK)
@@ -121,20 +108,12 @@ static int process_data(char **net, int *left_len, int type, int n, \
 
     if (type == 's')
     {
-        if (n == 0)
-            return ERROR_NEED_NUM;
-
-        IF_LESS(*left_len, n);
-
         if (job == DO_PACK)
         {
             if (from == FROM_ARG)
                 s = va_arg(*va, char *);
             else
-            {
                 s = *locale;
-                *locale += n;
-            }
         }
         else
         {
@@ -144,18 +123,43 @@ static int process_data(char **net, int *left_len, int type, int n, \
                 d = *locale;
         }
 
-        i = 0;
-        while ((d[i] = s[i]))
-            ++i;
-        for (; i < n; ++i)
-            d[i] = '\0';
+        if (n == -1)
+        {
+            slen = strlen(s) + 1;
+        }
+        else
+        {
+            slen = n;
+        }
 
-        *net += n;
+        IF_LESS(*left_len, slen);
+        
+        for (i = 0; i < (slen - 1); ++i)
+        {
+            d[i] = s[i];
+            if (!d[i])
+                break;
+        }
+
+        if(n == -1) 
+        {
+            d[i] = '\0';
+        }
+        else if (n > 0)
+        {
+            for (; i < slen; ++i)
+                d[i] = '\0';
+        }
+
+        *net += slen;
+
+        if (from == FROM_PTR)
+            *locale += slen;
     }
     else if (type == 'a')
     {
-        if (n == 0)
-            return ERROR_NEED_NUM;
+        if (n == -1)
+            n = 1;
 
         IF_LESS(*left_len, n);
 
@@ -166,7 +170,7 @@ static int process_data(char **net, int *left_len, int type, int n, \
     }
     else
     {
-        if ((job == DO_PACK) && n)
+        if ((job == DO_PACK) && n != -1)
         {
             if (from == FROM_ARG)
                 s = va_arg(*va, char *);
@@ -181,7 +185,10 @@ static int process_data(char **net, int *left_len, int type, int n, \
                 d = *locale;
         }
 
-        array_num = n ? n : 1;
+        if (n == -1)
+            array_num = 1;
+        else
+            array_num = n;
 
         for (i = 0; i < array_num; ++i)
         {
@@ -198,7 +205,7 @@ static int process_data(char **net, int *left_len, int type, int n, \
                     break;
                 case 'D':
                     /* there is no uint64_t in ... in 32 system */
-                    if ((job == DO_PACK) && !n && (from == FROM_ARG))
+                    if ((job == DO_PACK) && (n == -1) && (from == FROM_ARG))
                         if (sizeof(char *) == sizeof(uint32_t))
                             return ERROR_NO_DDWORD_ARG;
 
@@ -234,6 +241,9 @@ static int get_num(char **f)
     }
     *b = '\0';
     *f = p;
+
+    if (!isdigit(*buf))
+        return -1;
 
     return atoi(buf);
 }
@@ -310,7 +320,7 @@ static int handle_format(char **net, int *left_len, char *fmt, \
                 if (from == FROM_ARG)
                     *locale = va_arg(*va, char *);
 
-                if (n == 0)
+                if (n == -1)
                     n = 1;
 
                 for (i = 0; i < n; ++i)
@@ -374,17 +384,20 @@ int pack(char *const ptr, size_t max_len, char *format, ...)
     return ret;
 }
 
-int vpack(char **ptr, size_t max_len, char *format, ...)
+int vpack(char **ptr, int *left_len, char *format, ...)
 {
     va_list va;
     int ret;
 
     va_start(va, format);
-    ret = __pack(*ptr, max_len, format, va, DO_PACK);
+    ret = __pack(*ptr, *left_len, format, va, DO_PACK);
     va_end(va);
 
     if (ret >= 0)
+    {
         *ptr += ret;
+        *left_len -= ret;
+    }
 
     return ret;
 }
@@ -401,17 +414,20 @@ int unpack(char *const ptr, size_t max_len, char *format, ...)
     return ret;
 }
 
-int vunpack(char **ptr, size_t max_len, char *format, ...)
+int vunpack(char **ptr, int *left_len, char *format, ...)
 {
     va_list va;
     int ret;
 
     va_start(va, format);
-    ret = __pack(*ptr, max_len, format, va, DO_UNPACK);
+    ret = __pack(*ptr, *left_len, format, va, DO_UNPACK);
     va_end(va);
 
     if (ret >= 0)
+    {
         *ptr += ret;
+        *left_len -= ret;
+    }
 
     return ret;
 }
