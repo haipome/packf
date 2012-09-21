@@ -35,10 +35,10 @@ extern uint64_t endian_switch(uint64_t a);
  * ----------------------------------------------------------------------
  *           |   s    |    字符串
  *           |   a    |    空字符 ('\0')
- *     n     |   c    |    char   (uint8_t)
- *  (choice) |   w    |    word   (uint16_t)
- *  (n >= 0) |   d    |    dword  (uint32_t)
- *           |   D    |    ddword (uint64_t) 32 位机不支持 8 字节整数的
+ *     n     |   c    |    char   (int8_t  | uint8_t)
+ *  (choice) |   w    |    word   (int16_t | uint16_t)
+ *  (n >= 0) |   d    |    dword  (int32_t | uint32_t)
+ *           |   D    |    ddword (int64_t | uint64_t) 32 位机不支持直接
  *           |        |    参数传递方式，如需请使用数组或结构体方式
  *           |   f    |    float  (4 bytes)
  *           |   F    |    double (8 bytes)

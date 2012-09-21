@@ -98,7 +98,7 @@ static int process_data(char **net, int *left_len, int type, int n, \
     uint64_t itmp8;
     double ftmp;
 
-    if ((!net || !(*net)) || (!va && (!locale || !(*locale))))
+    if ((!net || !(*net)))
         return ERROR_BAD_PARAM;
 
     if (job == DO_PACK)
@@ -195,21 +195,21 @@ static int process_data(char **net, int *left_len, int type, int n, \
             switch (type)
             {
                 case 'c':
-                    GET_AND_SET(itmp, int, uint8_t, NO_SWITCH, NO_SWITCH);
+                    GET_AND_SET(itmp, int, int8_t, NO_SWITCH, NO_SWITCH);
                     break;
                 case 'w':
-                    GET_AND_SET(itmp, int, uint16_t, htons, ntohs);
+                    GET_AND_SET(itmp, int, int16_t, htons, ntohs);
                     break;
                 case 'd':
-                    GET_AND_SET(itmp, int, uint32_t, htonl, ntohl);
+                    GET_AND_SET(itmp, int, int32_t, htonl, ntohl);
                     break;
                 case 'D':
-                    /* there is no uint64_t in ... in 32 system */
+                    /* there is no int64_t in ... in 32 system */
                     if ((job == DO_PACK) && (n == -1) && (from == FROM_ARG))
                         if (sizeof(char *) == sizeof(uint32_t))
                             return ERROR_NO_DDWORD_ARG;
 
-                    GET_AND_SET(itmp8, uint64_t, uint64_t, htonll, ntohll);
+                    GET_AND_SET(itmp8, int64_t, int64_t, htonll, ntohll);
                     break;
                 case 'f':
                     GET_AND_SET(ftmp, double, float, NO_SWITCH, NO_SWITCH);
@@ -359,6 +359,7 @@ static int __pack(char *const ptr, size_t max_len, char *format, \
     char *p = ptr;
     char *f = format;
     char *locale = NULL;
+    va_list _va;
 
     if (ptr == NULL || max_len < 0 || format == NULL)
         return -1;
@@ -367,7 +368,9 @@ static int __pack(char *const ptr, size_t max_len, char *format, \
     if (ret < 0)
         return ret;
 
-    ret = handle_format(&p, &left_len, f, FROM_ARG, &va, &locale, job);
+    va_copy(_va, va);
+
+    ret = handle_format(&p, &left_len, f, FROM_ARG, &_va, &locale, job);
 
     return ret;
 }

@@ -83,6 +83,25 @@ int main()
     bin_dump(pkg, len);
     len = pack(pkg, 8096, "30s", "hello world!");
     bin_dump(pkg, len);
+    len = pack(pkg, 8, "D", 15);
+    bin_dump(pkg, len);
+    len = pack(pkg, 4, "d", -15);
+    bin_dump(pkg, len);
+    int dd;
+    unpack(pkg, len, "d", &dd);
+    printf("%d %u\n", dd, dd);
+
+    uint16_t uw = 17;
+    uint8_t w = 200;
+
+    len = pack(pkg, 3, "wc", uw, w);
+    bin_dump(pkg, len);
+    unpack(pkg, len, "wc", &uw, &w);
+    printf("%u %u\n", uw, w);
+
+    printf("%u\n", (uint8_t)((int)((int8_t)202u)));
+    dd = (int)((int8_t)202u);
+    bin_dump(&dd, 4);
 
 
     return 0;
