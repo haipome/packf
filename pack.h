@@ -12,7 +12,6 @@
    ((((x) & 0xff00000000000000llu) >> 56) | \
     (((x) & 0x00ff000000000000llu) >> 40) | \
     (((x) & 0x0000ff0000000000llu) >> 24) | \
-    (((x) & 0x0000ff0000000000llu) >> 24) | \
     (((x) & 0x000000ff00000000llu) >> 8)  | \
     (((x) & 0x00000000ff000000llu) << 8)  | \
     (((x) & 0x0000000000ff0000llu) << 24) | \
@@ -112,7 +111,7 @@ extern int vunpack(char **ptr, int *left_len, char *format, ...);
  *     int len;
  *     uint64_t ddword[2] = {0, 1};
  *     len = pack(pkg, 8096, "cwd2DfF10s16a", 'b', 2, 3, \
- *                4.0, 5.1, ddword, "hello pack!");
+ *                ddword, 4.0, 5.1, "hello pack!");
  *     if (len < 0)
  *         error...
  *
@@ -122,7 +121,7 @@ extern int vunpack(char **ptr, int *left_len, char *format, ...);
  *     float d;
  *     double e;
  *     char s[20];
- *     len = unpack(pkg, 8096, "cwd2DfF10s16a", &a, &b, &c, &d, &e, ddword, s);
+ *     len = unpack(pkg, 8096, "cwd2DfF10s16a", &a, &b, &c, ddword, &d, &e, s);
  *     if (len < 0)
  *         error...
  *
