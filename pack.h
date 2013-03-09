@@ -1,6 +1,5 @@
 /*
  * Description: 支持数组和结构体的网络数据打包和解包函数
- *              CS 和 OIDB 协议打包和解包的封装函数
  *     History: damonyang@tencent.com, 2012/09/04, create
  *              damonyang@tencent.com, 2012/11/06, revise for commlib
  *              damonyang@tencent.com, 2012/12/11, add support to LV
