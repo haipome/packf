@@ -1,437 +1,736 @@
 /*
- *    Filename: pack.c
- * Description: 支持数组和结构体的网络数据打包和解包封装函数
- *      Coding: GBK
- *     History: damonyang@tencent, 2012/09/04, create
+ * Description: a lib for network programming
+ *     History: damonyang@tencent.com, 2012/09/04, create
  */
 
+# include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
 # include <ctype.h>
 # include <stdlib.h>
 # include <netinet/in.h>
-# include <endian.h>
 
-# include "pack.h"
+# include "oi_pack.h"
 
-# define BUF_NUM_LEN 64
+# define FROM_ARG 1
+# define FROM_PTR 2
 
-enum {
-    FROM_ARG,
-    FROM_PTR,
-};
+# define ERROR_BAD_PARAM        -221
+# define ERROR_NO_BUF           -222
+# define ERROR_NULL_POINTER     -223
+# define ERROR_NOT_FORMAT       -224
+# define ERROR_EXPECT_FORMAT    -225
+# define ERROR_NOT_MATCH        -226
+# define ERROR_PKG_FORMAT       -227
+# define ERROR_OIDB_RESULT      -228
 
-enum {
-    DO_PACK,
-    DO_UNPACK,
-};
+# define swap_ddword(x)  \
+   ((((x) & 0xff00000000000000llu) >> 56) | \
+    (((x) & 0x00ff000000000000llu) >> 40) | \
+    (((x) & 0x0000ff0000000000llu) >> 24) | \
+    (((x) & 0x000000ff00000000llu) >> 8)  | \
+    (((x) & 0x00000000ff000000llu) << 8)  | \
+    (((x) & 0x0000000000ff0000llu) << 24) | \
+    (((x) & 0x000000000000ff00llu) << 40) | \
+    (((x) & 0x00000000000000ffllu) << 56) )
 
-enum {
-    ERROR_BAD_PARAM = -221,       /* 传入参数错误，指针为 NULL or max_len < 0 */
-    ERROR_NO_BUF = -222,          /* ptr 指向的存储区长度不够 */
-    ERROR_NULL_POINTER = -223,    /* 变参中指针有 NULL */
-    ERROR_NEED_NUM = -224,        /* as 类型必须前缀数字 */
-    ERROR_NOT_FORMAT = -225,      /* 未知 format 类型 */
-    ERROR_EXPECT_FORMAT = -226,   /* format 缺少参数 */
-    ERROR_NOT_MATCH = -227,       /* [] 不匹配 */
-    ERROR_NO_DDWORD_ARG = -228,   /* 32 位机不支持变参中传递 8 字节长整数 */
-};
+/* endian.h do not support standard c */
 
-uint64_t endian_switch(uint64_t a)
+static union { char c[4]; uint32_t l; } int_endian_t = {{ 'l', '?', '?', 'b' }};
+
+# define IS_INT_BIG_ENDIAN ((char)(int_endian_t.l) == 'b')
+
+uint64_t ddword_endian_switch(uint64_t a)
 {
-    if (BYTE_ORDER == BIG_ENDIAN)
+    if (IS_INT_BIG_ENDIAN)
         return a;
-    else
-        return swap_ddword(a);
+
+    return swap_ddword(a);
 }
 
-# define IF_LESS(x, n)  do                                                  \
-                        {                                                   \
-                            if ((x) < (n))                                  \
-                                return ERROR_NO_BUF;                        \
-                            (x) -= (n);                                     \
-                        } while(0)                                          \
+static union { float f; uint8_t c[4]; } float_endian_t = { 1.0 };
+
+# define IS_FLOAT_BIG_ENDIAN (float_endian_t.c[0] == 0x3f)
+
+float float_endian_switch(float a)
+{
+    if (IS_FLOAT_BIG_ENDIAN)
+        return a;
+
+    union { float f; uint32_t i; } u_float = { a };
+    u_float.i = htonl(u_float.i);
+
+    return u_float.f;
+}
+
+double double_endian_switch(double a)
+{
+    if (IS_FLOAT_BIG_ENDIAN)
+        return a;
+
+    union { double d; uint64_t i; } u_double = { a };
+    u_double.i = htonll(u_double.i);
+
+    return u_double.d;
+}
+
+# define IF_LESS(x, n) do {                             \
+    if ((x) < 0 || (x) < (n)) return ERROR_NO_BUF;      \
+    (x) -= (n);                                         \
+} while(0)
+
+# define NEG_RET(x) do {                                \
+    int __ret = (x);                                    \
+    if (__ret < 0) return __ret;                        \
+} while (0)
 
 # define NO_SWITCH(x) (x)
 
-# define GET_AND_SET(val, type1, type2, switch1, switch2) do                \
-                {                                                           \
-                    IF_LESS(*left_len, sizeof(type2));                      \
-                    if (job == DO_PACK)                                     \
-                    {                                                       \
-                        if (n == -1)                                        \
-                        {                                                   \
-                            if (from == FROM_ARG)                           \
-                                val = va_arg(*va, type1);                   \
-                            else                                            \
-                            {                                               \
-                                val = (type1)(*((type2 *)(*locale)));       \
-                                *locale += sizeof(type2);                   \
-                            }                                               \
-                        }                                                   \
-                        else                                                \
-                        {                                                   \
-                            val = (type1)(((type2 *)s)[i]);                 \
-                            if ((job == DO_PACK) && (n != -1) &&            \
-                                    (from == FROM_PTR))                     \
-                                *locale += sizeof(type2);                   \
-                        }                                                   \
-                        *((type2 *)(*net)) = switch1((type2)val);           \
-                        *net += sizeof(type2);                              \
-                    }                                                       \
-                    else                                                    \
-                    {                                                       \
-                        ((type2 *)d)[i] = switch2(((type2 *)s)[i]);         \
-                        if ((job == DO_UNPACK) && (from == FROM_PTR))       \
-                            *locale += sizeof(type2);                       \
-                        *net += sizeof(type2);                              \
-                    }                                                       \
-                } while (0)
+# define SET_LV_LEN(des) do {                                       \
+    IF_LESS(*left_len, lv_type);                                    \
+    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)lv_len;        \
+    else *((uint16_t *)(des)) = htons((uint16_t)lv_len);            \
+    (des) = (char *)(des) + lv_type;                                \
+} while (0)
 
-static int process_data(char **net, int *left_len, int type, int n, \
-                        int from, va_list *va, char **locale, int job)
+# define SET_LV(des, src) do {                                      \
+    if (lv_type)                                                    \
+    {                                                               \
+        if (from == FROM_ARG) lv_len = va_arg(va, int);             \
+        else                                                        \
+        {                                                           \
+            if (lv_type == 1) lv_len = *((uint8_t *)(src));         \
+            else lv_len = *((uint16_t *)(src));                     \
+            (src) = (char *)(src) + lv_type;                        \
+        }                                                           \
+        if (num != -1 && lv_len > num) return ERROR_NO_BUF;         \
+        SET_LV_LEN(des);                                            \
+    }                                                               \
+} while (0)
+
+# define DO_PACKF(type1, type2, swap, swap_flag) do {               \
+    SET_LV(*net, *locale);                                          \
+    if (num == -1 && !lv_type)                                      \
+    {                                                               \
+        IF_LESS(*left_len, sizeof(type1));                          \
+        if (from == FROM_ARG)                                       \
+            *((type1 *)(*net)) = swap((type1)(va_arg(va, type2)));  \
+        else                                                        \
+        {                                                           \
+            *((type1 *)(*net)) = swap(*((type1 *)(*locale)));       \
+            *locale = (char *)*locale + sizeof(type1);              \
+        }                                                           \
+        *net = (char *)*net + sizeof(type1);                        \
+    }                                                               \
+    else                                                            \
+    {                                                               \
+        if (from == FROM_ARG)                                       \
+            src = va_arg(va, char *);                               \
+        else                                                        \
+            src = *locale;                                          \
+        des = *net;                                                 \
+        if (lv_type && num != -1 && lv_len > num)                   \
+            return ERROR_NO_BUF;                                    \
+        array_size = lv_type ? lv_len : num;                        \
+        offset = sizeof(type1) * array_size;                        \
+        if (offset) {                                               \
+            IF_LESS(*left_len, offset);                             \
+            if (!swap_flag)                                         \
+                memcpy(des, src, offset);                           \
+            else                                                    \
+                for (i = 0; i < array_size; i++)                    \
+                    ((type1 *)des)[i] = swap(((type1 *)src)[i]);    \
+            *net = (char *)*net + offset;                           \
+        }                                                           \
+        if (from == FROM_PTR)                                       \
+        {                                                           \
+            if (lv_type && num)                                     \
+                *locale = (char *)*locale + num * sizeof(type1);    \
+            else                                                    \
+                *locale = (char *)*locale + offset;                 \
+        }                                                           \
+    }                                                               \
+} while (0)
+
+static int __packf(void **net, int *left_len, char *format, \
+        int from, va_list va, void **locale)
 {
-    int i, array_num, slen;
-    char *s, *d;
-
-    int itmp;
-    uint64_t itmp8;
-    double ftmp;
-
-    if ((!net || !(*net)))
-        return ERROR_BAD_PARAM;
-
-    if (job == DO_PACK)
-        d = *net;
-    else
-        s = *net;
-
-    if (type == 's')
-    {
-        if (job == DO_PACK)
-        {
-            if (from == FROM_ARG)
-                s = va_arg(*va, char *);
-            else
-                s = *locale;
-        }
-        else
-        {
-            if (from == FROM_ARG)
-                d = va_arg(*va, char *);
-            else
-                d = *locale;
-        }
-
-        if (n == -1)
-        {
-            slen = strlen(s) + 1;
-        }
-        else
-        {
-            slen = n;
-        }
-
-        IF_LESS(*left_len, slen);
-        
-        for (i = 0; i < (slen - 1); ++i)
-        {
-            d[i] = s[i];
-            if (!d[i])
-                break;
-        }
-
-        if(n == -1) 
-        {
-            d[i] = '\0';
-        }
-        else if (n > 0)
-        {
-            for (; i < slen; ++i)
-                d[i] = '\0';
-        }
-
-        *net += slen;
-
-        if (from == FROM_PTR)
-            *locale += slen;
-    }
-    else if (type == 'a')
-    {
-        if (n == -1)
-            n = 1;
-
-        IF_LESS(*left_len, n);
-
-        if (job == DO_PACK)
-            memset(*net, '\0', n);
-
-        *net += n;
-    }
-    else
-    {
-        if ((job == DO_PACK) && n != -1)
-        {
-            if (from == FROM_ARG)
-                s = va_arg(*va, char *);
-            else
-                s = *locale;
-        }
-        if (job == DO_UNPACK)
-        {
-            if (from == FROM_ARG)
-                d = va_arg(*va, char *);
-            else
-                d = *locale;
-        }
-
-        if (n == -1)
-            array_num = 1;
-        else
-            array_num = n;
-
-        for (i = 0; i < array_num; ++i)
-        {
-            switch (type)
-            {
-                case 'c':
-                    GET_AND_SET(itmp, int, int8_t, NO_SWITCH, NO_SWITCH);
-                    break;
-                case 'w':
-                    GET_AND_SET(itmp, int, int16_t, htons, ntohs);
-                    break;
-                case 'd':
-                    GET_AND_SET(itmp, int, int32_t, htonl, ntohl);
-                    break;
-                case 'D':
-                    /* there is no int64_t in ... in 32 system */
-                    if ((job == DO_PACK) && (n == -1) && (from == FROM_ARG))
-                        if (sizeof(char *) == sizeof(uint32_t))
-                            return ERROR_NO_DDWORD_ARG;
-
-                    GET_AND_SET(itmp8, int64_t, int64_t, htonll, ntohll);
-                    break;
-                case 'f':
-                    GET_AND_SET(ftmp, double, float, NO_SWITCH, NO_SWITCH);
-                    break;
-                case 'F':
-                    GET_AND_SET(ftmp, double, double, NO_SWITCH, NO_SWITCH);
-                    break;
-                default:
-                    return ERROR_NOT_FORMAT;
-            }
-        }
-    }
-
-    return 0;
-}
-
-static int get_num(char **f)
-{
-    char buf[BUF_NUM_LEN];
-    char *p = *f;
-    char *b = buf;
-
-    if (f == NULL || p == NULL)
-        return ERROR_BAD_PARAM;
-
-    while (isdigit(*p))
-    {
-        *b++ = *p++;
-    }
-    *b = '\0';
-    *f = p;
-
-    if (!isdigit(*buf))
-        return -1;
-
-    return atoi(buf);
-}
-
-static int bracket_match(char *s)
-{
-    char *p = s;
-    int stack = 0;
-
-    while (*p)
-    {
-        if (*p == '[')
-            ++stack;
-        else if (*p == ']')
-            --stack;
-        else
-            ;
-
-        ++p;
-    }
-
-    if (stack)
-        return ERROR_NOT_MATCH;
-    else
-        return 0;
-}
-
-static int bracket_pass(char **s)
-{
-    char *p = *s;
-    int stack = 1;
-
-    while (*p)
-    {
-        if (*p == '[')
-            ++stack;
-        else if (*p == ']')
-        {
-            --stack;
-            if (stack == 0)
-            {
-                *s = p + 1;
-                return 0;
-            }
-        }
-        else
-            ;
-
-        ++p;
-    }
-
-    return ERROR_NOT_MATCH;
-}
-
-static int handle_format(char **net, int *left_len, char *fmt, \
-                          int from, va_list *va, char **locale, int job)
-{
-    int i, n, ret, buf_len = *left_len;
-    char type;
-    char *f = fmt;
+    int buf_len = *left_len;
+    int num, i, array_size, offset, bracket_stack, lv_len = 0;
+    char *f = format, *str_num, *src, *des;
+    char type, lv_type;
+    int struct_len_locale = 0;
+    void *struct_start_locale, *struct_start_net, *p_struct_len;
 
     while (*f)
     {
-        n = get_num(&f);
+        if (*f == ' ')
+        {
+            ++f;
+            continue;
+        }
+
+        if (*f == '-')
+        {
+            lv_type = 1;
+            ++f;
+        }
+        else if (*f == '=')
+        {
+            lv_type = 2;
+            ++f;
+        }
+        else
+        {
+            lv_type = 0;
+        }
+
+        str_num = f;
+        while (isdigit(*f))
+            ++f;
+        if (str_num == f)
+            num = -1;
+        else
+            num = atoi(str_num);
+
         type = *(f++);
         if (!type)
             return ERROR_EXPECT_FORMAT;
 
-        /* printf("n = %d, type = %c\n", n,  type); */
+        /* printf("num = %d, type = %c\n", num,  type); */
 
         switch (type)
         {
             case '[':
                 if (from == FROM_ARG)
-                    *locale = va_arg(*va, char *);
+                    *locale = va_arg(va, char *);
 
-                if (n == -1)
-                    n = 1;
-
-                for (i = 0; i < n; ++i)
+                if (lv_type && num == -1)
                 {
-                    ret = handle_format(net, left_len, f, \
-                                        FROM_PTR, NULL, locale, job);
-
-                    if (ret < 0)
-                        return ret;
+                    struct_start_net = *net = (char *)*net + lv_type;
+                    NEG_RET(__packf(net, left_len, f, FROM_PTR, NULL, locale));
+                    lv_len = (char *)*net - (char *)struct_start_net;
+                    p_struct_len = (char *)struct_start_net - lv_type;
+                    SET_LV_LEN(p_struct_len);
+                }
+                else
+                {
+                    SET_LV(*net, *locale);
+                    array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
+                    for (i = 0; i < array_size; i++)
+                    {
+                        struct_start_locale = *locale;
+                        NEG_RET(__packf(net, left_len, f, FROM_PTR, NULL, locale));
+                        struct_len_locale = (char *)*locale - (char *)struct_start_locale;
+                    }
+                    if (lv_type && from == FROM_PTR)
+                        *locale = (char *)*locale + struct_len_locale * (num - lv_len);
                 }
 
-                ret = bracket_pass(&f);
-                if (ret < 0)
-                    return ret;
+                bracket_stack = 1;
+                while (bracket_stack)
+                {
+                    if (!(*f))
+                        return ERROR_NOT_MATCH;
+                    else if (*f == '[')
+                        ++bracket_stack;
+                    else if (*f == ']')
+                        --bracket_stack;
+
+                    ++f;
+                }
 
                 break;
             case ']':
                 return 0;
-            default:
-                ret = process_data(net, left_len, type, n, \
-                                   from, va, locale, job);
-                if (ret < 0)
-                    return ret;
+            case 's':
+                des = *net;
+                if (from == FROM_ARG)
+                    src = va_arg(va, char *);
+                else
+                    src = (char *)*locale + lv_type;
+
+                if (lv_type)
+                {
+                    if (num == -1)
+                        lv_len = strlen(src);
+                    else
+                        lv_len = strnlen(src, num - 1);
+                    SET_LV_LEN(des);
+
+                    if (lv_len)
+                    {
+                        IF_LESS(*left_len, lv_len);
+                        memcpy(des, src, lv_len);
+                    }
+
+                    offset = lv_type + lv_len;
+                    *net = (char *)*net + offset;
+                    if (from == FROM_PTR)
+                    {
+                        if (num == -1)
+                            *locale = (char *)*locale + offset;
+                        else
+                            *locale = (char *)*locale + lv_type + num;
+                    }
+                }
+                else
+                {
+                    if (num == -1)
+                        offset = strlen(src) + 1;
+                    else
+                        offset = num;
+
+                    IF_LESS(*left_len, offset);
+
+                    for (i = 0; i < offset; ++i)
+                        if (!(des[i] = src[i]))
+                            break;
+                    for (; i < offset; ++i)
+                        des[i] = '\0';
+                    des[offset - 1] = '\0';
+
+                    *net = (char *)*net + offset;
+                    if (from == FROM_PTR)
+                        *locale = (char *)*locale + offset;
+                }
 
                 break;
+            case 'a':
+                SET_LV(*net, *locale);
+
+                offset = lv_type ? lv_len : (num == -1 ? 1 : num);
+                IF_LESS(*left_len, offset);
+                memset(*net, 0, offset);
+                *net = (char *)*net + offset;
+                if (from == FROM_PTR)
+                {
+                    if (lv_type && num)
+                        *locale = (char *)*locale + num;
+                    else
+                        *locale = (char *)*locale + offset;
+                }
+
+                break;
+            case 'c':
+                DO_PACKF(int8_t, int, NO_SWITCH, 0);
+
+                break;
+            case 'w':
+                DO_PACKF(int16_t, int, htons, 1);
+
+                break;
+            case 'd':
+                DO_PACKF(int32_t, int, htonl, 1);
+
+                break;
+            case 'D':
+                DO_PACKF(int64_t, int64_t, htonll, 1);
+
+                break;
+            case 'f':
+                DO_PACKF(float, double, htonf, 1);
+
+                break;
+            case 'F':
+                DO_PACKF(double, double, htond, 1);
+
+                break;
+            default:
+                return ERROR_NOT_FORMAT;
         }
     }
 
     return buf_len - *left_len;
 }
 
-static int __pack(char *const ptr, size_t max_len, char *format, \
-                  va_list va, int job)
+# define SET_LEN(des, len) do {                                             \
+    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)len;                   \
+    else *((uint16_t *)(des)) = (uint16_t)lv_len;                           \
+} while (0)
+
+# define GET_LV_LEN(src) do {                                               \
+    IF_LESS(*left_len, lv_type);                                            \
+    if (lv_type == 1) lv_len = *((uint8_t *)(src));                         \
+    else lv_len = ntohs(*((uint16_t *)(src)));                              \
+    (src) = (char *)(src) + lv_type;                                        \
+} while (0)
+
+# define GET_LV(des, src) do {                                              \
+    if (lv_type)                                                            \
+    {                                                                       \
+        GET_LV_LEN(src);                                                    \
+        if (num != -1 && lv_len > num) return ERROR_NO_BUF;                 \
+        if (from == FROM_ARG) SET_LEN(va_arg(va, char *), lv_len);          \
+        else { SET_LEN(des, lv_len); (des) = (char *)des + lv_type; }       \
+    }                                                                       \
+} while (0)
+
+# define DO_UNPACKF(type, swap, swap_flag) do {                             \
+    GET_LV(*locale, *net);                                                  \
+    if (num == -1 && !lv_type)                                              \
+    {                                                                       \
+        IF_LESS(*left_len, sizeof(type));                                   \
+        if (from == FROM_ARG)                                               \
+            *((type *)(va_arg(va, char *))) = swap(*((type *)(*net)));      \
+        else                                                                \
+        {                                                                   \
+            *((type *)(*locale)) = swap(*((type *)(*net)));                 \
+            *locale = (char *)*locale + sizeof(type);                       \
+        }                                                                   \
+        *net = (char *)*net + sizeof(type);                                 \
+    }                                                                       \
+    else                                                                    \
+    {                                                                       \
+        if (from == FROM_ARG)                                               \
+            des = va_arg(va, char *);                                       \
+        else                                                                \
+            des = *locale;                                                  \
+        src = *net;                                                         \
+        array_size = lv_type ? lv_len : num;                                \
+        offset = sizeof(type) * array_size;                                 \
+        if (offset) {                                                       \
+            IF_LESS(*left_len, offset);                                     \
+            if (!swap_flag)                                                 \
+                memcpy(des, src, offset);                                   \
+            else                                                            \
+                for (i = 0; i < array_size; i++)                            \
+                    ((type *)des)[i] = swap(((type *)src)[i]);              \
+            *net = (char *)*net + offset;                                   \
+        }                                                                   \
+        if (from == FROM_PTR)                                               \
+        {                                                                   \
+            if (lv_type && num)                                             \
+                *locale = (char *)*locale + num * sizeof(type);             \
+            else                                                            \
+                *locale = (char *)*locale + offset;                         \
+        }                                                                   \
+    }                                                                       \
+} while (0)
+
+static int __unpackf(void **net, int *left_len, char *format, \
+        int from, va_list va, void **locale)
 {
-    int ret, left_len = max_len;
-    char *p = ptr;
-    char *f = format;
-    char *locale = NULL;
-    va_list _va;
+    int buf_len = *left_len;
+    int num, i, array_size, offset, bracket_stack, lv_len = 0;
+    char *f = format, *str_num, *src, *des;
+    char type, lv_type;
+    int struct_len_locale = 0, struct_len_net = 0;
+    void *struct_start_locale, *struct_start_net;
 
-    if (ptr == NULL || max_len < 0 || format == NULL)
-        return -1;
-
-    ret = bracket_match(f);
-    if (ret < 0)
-        return ret;
-
-    va_copy(_va, va);
-
-    ret = handle_format(&p, &left_len, f, FROM_ARG, &_va, &locale, job);
-
-    return ret;
-}
-
-int pack(char *const ptr, size_t max_len, char *format, ...)
-{
-    va_list va;
-    int ret;
-
-    va_start(va, format);
-    ret = __pack(ptr, max_len, format, va, DO_PACK);
-    va_end(va);
-
-    return ret;
-}
-
-int vpack(char **ptr, int *left_len, char *format, ...)
-{
-    va_list va;
-    int ret;
-
-    va_start(va, format);
-    ret = __pack(*ptr, *left_len, format, va, DO_PACK);
-    va_end(va);
-
-    if (ret >= 0)
+    while (*f)
     {
-        *ptr += ret;
-        *left_len -= ret;
+        if (*f == ' ')
+        {
+            ++f;
+            continue;
+        }
+
+        if (*f == '-')
+        {
+            lv_type = 1;
+            ++f;
+        }
+        else if (*f == '=')
+        {
+            lv_type = 2;
+            ++f;
+        }
+        else
+        {
+            lv_type = 0;
+        }
+
+        str_num = f;
+        while (isdigit(*f))
+            ++f;
+        if (str_num == f)
+            num = -1;
+        else
+            num = atoi(str_num);
+        type = *(f++);
+        if (!type)
+            return ERROR_EXPECT_FORMAT;
+
+        /* printf("num = %d, type = %c\n", num,  type); */
+
+        switch (type)
+        {
+            case '[':
+                if (from == FROM_ARG)
+                    *locale = va_arg(va, char *);
+
+                if (lv_type && num == -1)
+                {
+                    GET_LV_LEN(*net);
+                    struct_len_net = lv_len;
+                    struct_start_net = *net;
+                    NEG_RET(__unpackf(net, &struct_len_net, f, FROM_PTR, NULL, locale));
+                    *net = (char *)struct_start_net + lv_len;
+                }
+                else
+                {
+                    GET_LV(*locale, *net);
+                    array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
+                    for (i = 0; i < array_size; i++)
+                    {
+                        struct_start_locale = *locale;
+                        NEG_RET(__unpackf(net, left_len, f, FROM_PTR, NULL, locale));
+                        struct_len_locale = (char *)*locale - (char *)struct_start_locale;
+                    }
+                    if (lv_type && from == FROM_PTR)
+                        *locale = (char *)*locale + struct_len_locale * (num - lv_len);
+                }
+
+                bracket_stack = 1;
+                while (bracket_stack)
+                {
+                    if (!(*f))
+                        return ERROR_NOT_MATCH;
+                    else if (*f == '[')
+                        ++bracket_stack;
+                    else if (*f == ']')
+                        --bracket_stack;
+
+                    ++f;
+                }
+
+                break;
+            case ']':
+                return 0;
+            case 's':
+                src = *net;
+                if (from == FROM_ARG)
+                    des = va_arg(va, char *);
+                else
+                    des = (char *)*locale;
+
+                if (lv_type)
+                {
+                    GET_LV_LEN(src);
+                    if (num != -1 && lv_len > num - 1)
+                        return ERROR_NO_BUF;
+
+                    if (from == FROM_PTR)
+                    {
+                        SET_LEN(des, lv_len);
+                        des += lv_type;
+                    }
+                    if (lv_len)
+                    {
+                        IF_LESS(*left_len, lv_len);
+                        memcpy(des, src, lv_len);
+                        *(des + lv_len) = '\0';
+                    }
+
+                    offset = lv_type + lv_len;
+                    *net = (char *)*net + offset;
+                    if (from == FROM_PTR)
+                    {
+                        if (num == -1)
+                            *locale = (char *)*locale + offset;
+                        else
+                            *locale = (char *)*locale + lv_type + num;
+                    }
+                }
+                else
+                {
+                    if (num == -1)
+                        offset = strlen(src) + 1;
+                    else
+                        offset = num;
+
+                    IF_LESS(*left_len, offset);
+
+                    for (i = 0; i < offset; ++i)
+                        if (!(des[i] = src[i]))
+                            break;
+                    for (; i < offset; ++i)
+                        des[i] = '\0';
+                    des[offset - 1] = '\0';
+
+                    *net = (char *)*net + offset;
+                    if (from == FROM_PTR)
+                        *locale = (char *)*locale + offset;
+                }
+
+                break;
+            case 'a':
+                GET_LV(*locale, *net);
+
+                offset = lv_type ? lv_len : (num == -1 ? 1 : num);
+                IF_LESS(*left_len, offset);
+                *net = (char *)*net + offset;
+                if (from == FROM_PTR)
+                {
+                    memset(*locale, 0, offset);
+                    if (lv_type && num)
+                        *locale = (char *)*locale + num;
+                    else
+                        *locale = (char *)*locale + offset;
+                }
+
+                break;
+            case 'c':
+                DO_UNPACKF(int8_t, NO_SWITCH, 0);
+
+                break;
+            case 'w':
+                DO_UNPACKF(int16_t, ntohs, 1);
+
+                break;
+            case 'd':
+                DO_UNPACKF(int32_t, ntohl, 1);
+
+                break;
+            case 'D':
+                DO_UNPACKF(int64_t, ntohll, 1);
+
+                break;
+            case 'f':
+                DO_UNPACKF(float, ntohf, 1);
+
+                break;
+            case 'F':
+                DO_UNPACKF(double, ntohd, 1);
+
+                break;
+            default:
+                return ERROR_NOT_FORMAT;
+        }
     }
 
-    return ret;
+    return buf_len - *left_len;
 }
 
-int unpack(char *const ptr, size_t max_len, char *format, ...)
+int packf(void *const ptr, size_t max_len, char *format, ...)
 {
     va_list va;
     int ret;
+    int left_len = max_len;
+    void *net = ptr, *locale = NULL;
+
+    if (!ptr)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
 
     va_start(va, format);
-    ret = __pack(ptr, max_len, format, va, DO_UNPACK);
+    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
 
     return ret;
 }
 
-int vunpack(char **ptr, int *left_len, char *format, ...)
+int unpackf(void *const ptr, size_t max_len, char *format, ...)
 {
     va_list va;
     int ret;
+    int left_len = max_len;
+    void *net = ptr, *locale = NULL;
+
+    if (!ptr)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
 
     va_start(va, format);
-    ret = __pack(*ptr, *left_len, format, va, DO_UNPACK);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
-
-    if (ret >= 0)
-    {
-        *ptr += ret;
-        *left_len -= ret;
-    }
 
     return ret;
 }
 
+int vpackf(void **ptr, int *left_len, char *format, ...)
+{
+    va_list va;
+    int ret;
+    void *locale = NULL;
+
+    if (!ptr || !*ptr || !left_len)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
+
+    va_start(va, format);
+    ret = __packf(ptr, left_len, format, FROM_ARG, va, &locale);
+    va_end(va);
+
+    return ret;
+}
+
+int vunpackf(void **ptr, int *left_len, char *format, ...)
+{
+    va_list va;
+    int ret;
+    void *locale = NULL;
+
+    if (!ptr || !*ptr || !left_len)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
+
+    va_start(va, format);
+    ret = __unpackf(ptr, left_len, format, FROM_ARG, va, &locale);
+    va_end(va);
+
+    return ret;
+}
+
+int vpacka(void **ptr, int *left_len, char *format, va_list arg)
+{
+    void *locale = NULL;
+    int ret;
+
+    if (!ptr || !*ptr || !left_len)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
+
+    ret = __packf(ptr, left_len, format, FROM_ARG, arg, &locale);
+
+    return ret;
+}
+
+int vunpacka(void **ptr, int *left_len, char *format, va_list arg)
+{
+    void *locale = NULL;
+    int ret;
+
+    if (!ptr || !*ptr || !left_len)
+        return ERROR_NULL_POINTER;
+    if (!format)
+        return 0;
+
+    ret = __unpackf(ptr, left_len, format, FROM_ARG, arg, &locale);
+
+    return ret;
+}
+
+int vpackn(void **ptr, int *left_len, void *buf, size_t len)
+{
+    if (!ptr || !*ptr || !left_len || !buf)
+        return ERROR_NULL_POINTER;
+
+    IF_LESS(*left_len, len);
+
+    memcpy(*ptr, buf, len);
+
+    *ptr = (char *)*ptr + len;
+
+    return len;
+}
+
+int vunpackn(void **ptr, int *left_len, void *buf, size_t len)
+{
+    if (!ptr || !*ptr || !left_len || !buf)
+        return ERROR_NULL_POINTER;
+
+    IF_LESS(*left_len, len);
+
+    memcpy(buf, *ptr, len);
+
+    *ptr = (char *)*ptr + len;
+
+    return len;
+}
