@@ -10,7 +10,7 @@
 # include <stdlib.h>
 # include <netinet/in.h>
 
-# include "oi_pack.h"
+# include "pack.h"
 
 # define FROM_ARG 1
 # define FROM_PTR 2
