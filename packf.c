@@ -23,7 +23,6 @@ static char *err_msg[] =
     "out of buf",
     "not format",
     "format error",
-    "not match",
     "be cut off",
     "null pointer",
 };
