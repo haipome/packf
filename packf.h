@@ -1,12 +1,15 @@
 /*
- * Description: 支持数组和结构体的网络数据打包和解包函数
- *     History: yang@haipo.me, 2012/09/04, create
- *              yang@haipo.me, 2012/12/11, add support to LV
- *              yang@haipo.me, 2013/01/30, add v(un)packa
+ * Binary serialization library for c/c++
+ *
+ * By Haipo Yang <yang@haipo.me>, 2012, 2013.
+ *
+ * This code is in the public domain. 
+ * You may use this code any way you wish, private, educational,
+ * or commercial. It's free.
  */
 
-# ifndef _PACK_H_
-# define _PACK_H_
+# ifndef _PACKF_H_
+# define _PACKF_H_
 
 # include <stdint.h>
 # include <stdarg.h>
@@ -18,10 +21,9 @@ extern "C"
 
 /*
  * packf, vpackf 和其对应的 unpackf, vunpackf 函数提供一种类似于 sprintf
- * 和 ssancf 函数的格式化网络数据打包和解包函数，只需要传入描述数据的格式
+ * 和 ssancf 函数的格式化的序列化与反序列化函数，只需要传入描述数据的格式
  * 字符串，即可方便的将各种数据类型（包括结构体和数组）转换为本地序或网络
  * 序，用于网络传输。
- * 兼容 32 位机和 64 位机。
  *
  * format: [-=][num]type     [] 表示可选
  *
@@ -75,49 +77,28 @@ extern "C"
  *      1): 结构体必须在 # pragma pack(1) 与 # pragma pack() 之间定义！
  *
  *      2): 结构体支持嵌套，即结构体中包含结构体。
- *
- * example:
- *      char buf[256];
- *
- * # pragma pack(1)
- *      struct people
- *      {
- *          uint32_t        uin;
- *          uint8_t         name_len;
- *          char            name[100];
- *          uint64_t        key;
- *          char            passwd[30];
- *      };
- *
- *      struct users
- *      {
- *          uint32_t        type;
- *          uint16_t        user_num;
- *          struct people   user[10];
- *      } users;
- * # pragma pack()
- *
- *      users.type          = 0;
- *      users.user_num      = 1;
- *      users.user[0].uin   = 506401056;
- *      users.user[0].key   = 1;
- *      strcpy(users.user[0].name,   "damonyang");
- *      strcpy(users.user[0].passwd, "123456789");
- *
- *      int len = packf(buf, sizeof(buf), "cwdDfF[d =10[d -100s D 30s]]16a", \
- *          0xa, 1, 2, 237417076350464llu, 3.4, 5.6, &users);
  */
 
-/*
- * 当发生错误时，如果 pack_error_format 不为 NULL，其指向发生错误的 format.
- * 此时可以通过打印字符串 pack_error_format 帮助定位错误位置。
- */
-extern char *pack_error_format;
+enum
+{
+    PACKF_OUT_OF_BUF   = -1,
+    PACKF_NOT_FORMAT   = -2,
+    PACKF_FORMAT_ERROR = -3,
+    PACKF_NOT_MATCH    = -4,
+    PACKF_BE_CUT_OFF   = -5,
+    PACKF_NULL_POINTER = -6,
+};
 
 /*
- * 如果 pack_print_error 为非 0 值，则在发生错误时，在标准出错打印错误信息
+ * 当发生错误时，如果 packf_error_format 不为 NULL，其指向发生错误的 format.
+ * 此时可以通过打印字符串 packf_error_format 帮助定位错误位置。
  */
-extern int pack_print_error;
+extern char *packf_error_format;
+
+/*
+ * 如果 packf_print_error 为非 0 值，则在发生错误时，在标准出错打印错误信息
+ */
+extern int packf_print_error;
 
 /*
  * 函数：packf : pack format
@@ -215,33 +196,6 @@ extern int vunpackn(void **current, int *left, void *buf, size_t n);
 
 extern int vpacka(void **current, int *left, char *format, va_list arg);
 extern int vunpacka(void **current, int *left, char *format, va_list arg);
-
-extern uint64_t ddword_endian_switch(uint64_t a);
-
-# ifndef htonll
-# define htonll(x) ddword_endian_switch(x)
-# endif
-# ifndef ntohll
-# define ntohll(x) ddword_endian_switch(x)
-# endif
-
-extern float float_endian_switch(float a);
-
-# ifndef htonf
-# define htonf(x) float_endian_switch(x)
-# endif
-# ifndef ntohf
-# define ntohf(x) float_endian_switch(x)
-# endif
-
-extern double double_endian_switch(double a);
-
-# ifndef htond
-# define htond(x) double_endian_switch(x)
-# endif
-# ifndef ntohd
-# define ntohd(x) double_endian_switch(x)
-# endif
 
 /* 如果结果为负值则返回负的行号 */
 # ifndef NEG_RET_LN
