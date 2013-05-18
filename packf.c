@@ -22,7 +22,8 @@ static char *err_msg[] =
 {
     "out of buf",
     "not format",
-    "format error",
+    "not match",
+    "expect format",
     "be cut off",
     "null pointer",
 };
@@ -39,7 +40,7 @@ int packf_print_error = 0;
     if ((ret) < 0 && packf_print_error)                                 \
     {                                                                   \
         fprintf(stderr, "%s: %s", __func__, err_msg[-(ret) - 1]);       \
-        if (packf_print_error)                                          \
+        if (packf_print_error && packf_error_format)                    \
             fprintf(stderr, ": %s\n", packf_error_format);              \
         else                                                            \
             putc('\n', stderr);                                         \
@@ -214,7 +215,7 @@ static int __packf(void **net, int *left_len, char *format, \
 
         type = *(f++);
         if (!type)
-            ERR_RET_FMT(PACKF_FORMAT_ERROR);
+            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
 
         switch (type)
         {
@@ -493,7 +494,7 @@ static int __unpackf(void **net, int *left_len, char *format, \
 
         type = *(f++);
         if (!type)
-            ERR_RET_FMT(PACKF_FORMAT_ERROR);
+            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
 
         switch (type)
         {
@@ -665,6 +666,27 @@ static int __unpackf(void **net, int *left_len, char *format, \
     return buf_len - *left_len;
 }
 
+static inline int __match(char *format)
+{
+    char *f = format;
+    int bracket_stack = 0;
+
+    while (*f)
+    {
+        if (*f == '[')
+            ++bracket_stack;
+        else if (*f == ']')
+            --bracket_stack;
+
+        ++f;
+    }
+
+    if (bracket_stack != 0)
+        return -1;
+
+    return 0;
+}
+
 int packf(void *dest, size_t max, char *format, ...)
 {
     va_list va;
@@ -675,6 +697,8 @@ int packf(void *dest, size_t max, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -695,6 +719,8 @@ int unpackf(void *src, size_t max, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -715,6 +741,8 @@ int vpackf(void **current, int *left, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -741,6 +769,8 @@ int vunpackf(void **current, int *left, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -766,6 +796,8 @@ int vpacka(void **current, int *left, char *format, va_list arg)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
@@ -789,6 +821,8 @@ int vunpacka(void **current, int *left, char *format, va_list arg)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
+    if (__match(format) < 0)
+        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
