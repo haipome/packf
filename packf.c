@@ -63,7 +63,7 @@ int packf_print_error = 0;
     if (__ret < 0) return __ret;                                        \
 } while (0)
 
-float __bswap_f(float x)
+static float __bswap_f(float x)
 {
     union { float f; uint32_t i; } u_float = { x };
     u_float.i = __bswap_32(u_float.i);
@@ -71,7 +71,7 @@ float __bswap_f(float x)
     return u_float.f;
 }
 
-double __bswap_d(double x)
+static double __bswap_d(double x)
 {
     union { double d; uint64_t i; } u_double = { x };
     u_double.i = __bswap_64(u_double.i);
