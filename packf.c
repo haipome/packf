@@ -11,7 +11,6 @@
 # include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
-# include <endian.h>
 
 # include "packf.h"
 
@@ -63,6 +62,11 @@ int packf_print_error = 0;
     if (__ret < 0) return __ret;                                        \
 } while (0)
 
+# include <endian.h>
+# include <byteswap.h>
+
+# if __FLOAT_WORD_ORDER == __LITTLE_ENDIAN
+
 static float __bswap_f(float x)
 {
     union { float f; uint32_t i; } u_float = { x };
@@ -79,7 +83,6 @@ static double __bswap_d(double x)
     return u_double.d;
 }
 
-# if __FLOAT_WORD_ORDER == __LITTLE_ENDIAN
 #  define htobef(x) __bswap_f(x)
 #  define htobed(x) __bswap_d(x)
 #  define beftoh(x) __bswap_f(x)
