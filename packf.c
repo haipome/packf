@@ -66,7 +66,7 @@ int packf_print_error = 0;
 static float __bswap_f(float x)
 {
     union { float f; uint32_t i; } u_float = { x };
-    u_float.i = __bswap_32(u_float.i);
+    u_float.i = bswap_32(u_float.i);
 
     return u_float.f;
 }
@@ -74,7 +74,7 @@ static float __bswap_f(float x)
 static double __bswap_d(double x)
 {
     union { double d; uint64_t i; } u_double = { x };
-    u_double.i = __bswap_64(u_double.i);
+    u_double.i = bswap_64(u_double.i);
 
     return u_double.d;
 }
@@ -220,11 +220,11 @@ static int __packf(void **net, int *left_len, char *format, \
         switch (type)
         {
             case '[':
-                if (from == FROM_ARG)
-                    *locale = va_arg(va, char *);
-
                 if (lv_type && num == -1)
                 {
+					if (from == FROM_ARG)
+						*locale = va_arg(va, char *);
+
                     p_struct_len = *net;
                     struct_start_net = *net = (char *)*net + lv_type;
                     if (from == FROM_PTR)
@@ -236,6 +236,9 @@ static int __packf(void **net, int *left_len, char *format, \
                 else
                 {
                     SET_LV(*net, *locale);
+					if (from == FROM_ARG)
+						*locale = va_arg(va, char *);
+
                     array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
                     for (i = 0; i < array_size; i++)
                     {
@@ -499,11 +502,11 @@ static int __unpackf(void **net, int *left_len, char *format, \
         switch (type)
         {
             case '[':
-                if (from == FROM_ARG)
-                    *locale = va_arg(va, char *);
-
                 if (lv_type && num == -1)
                 {
+					if (from == FROM_ARG)
+						*locale = va_arg(va, char *);
+
                     GET_LV_LEN(*net);
                     struct_len_net = lv_len;
                     struct_start_net = *net;
@@ -519,6 +522,9 @@ static int __unpackf(void **net, int *left_len, char *format, \
                 else
                 {
                     GET_LV(*locale, *net);
+					if (from == FROM_ARG)
+						*locale = va_arg(va, char *);
+
                     array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
                     for (i = 0; i < array_size; i++)
                     {
