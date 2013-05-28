@@ -65,6 +65,10 @@ int packf_print_error = 0;
 # include <endian.h>
 # include <byteswap.h>
 
+# ifndef __FLOAT_WORD_ORDER
+# define __FLOAT_WORD_ORDER __BYTE_ORDER
+# endif
+
 # if __FLOAT_WORD_ORDER == __LITTLE_ENDIAN
 
 static float __bswap_f(float x)
