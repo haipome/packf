@@ -112,6 +112,90 @@ static inline int __atoi(char *s, size_t n)
     return r;
 }
 
+static int __struct_len_locale(char *format)
+{
+    int len = 0, u_len, num, bracket_stack;
+    char *f = format, *__f, *str_num, type;
+
+    while (*f)
+    {
+        if (*f == ' ')
+        {
+            ++f;
+            continue;
+        }
+
+        __f = f;
+
+        if (*f == '-')
+        {
+            len += 1;
+            ++f;
+        }
+        else if (*f == '=')
+        {
+            len += 2;
+            ++f;
+        }
+
+        str_num = f;
+        while (__ISDIGIT(*f))
+            ++f;
+        if (str_num == f)
+            num = 1;
+        else
+            num = __atoi(str_num, f - str_num);
+
+        type = *(f++);
+        if (!type)
+            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
+
+        switch (type)
+        {
+            case 'a':
+            case 'c':
+            case 's':
+                u_len = 1;
+                break;
+            case 'w':
+                u_len = 2;
+                break;
+            case 'd':
+            case 'f':
+                u_len = 4;
+                break;
+            case 'D':
+            case 'F':
+                u_len = 8;
+                break;
+            case '[':
+                NEG_RET(u_len = __struct_len_locale(f));
+                bracket_stack = 1;
+                while (bracket_stack)
+                {
+                    if (!(*f))
+                        ERR_RET_FMT(PACKF_NOT_MATCH);
+                    else if (*f == '[')
+                        ++bracket_stack;
+                    else if (*f == ']')
+                        --bracket_stack;
+
+                    ++f;
+                }
+
+                break;
+            case ']':
+                return len;
+            default:
+                ERR_RET_FMT(PACKF_NOT_FORMAT);
+        }
+
+        len += num * u_len;
+    }
+
+    return  len;
+}
+
 # define SET_LV_LEN(des) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
     if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)lv_len;            \
@@ -256,8 +340,12 @@ static int __packf(void **net, int *left_len, char *format, \
                             (char *)struct_start_locale;
                     }
                     if (lv_type && from == FROM_PTR)
+                    {
+                        if (array_size == 0)
+                            NEG_RET(struct_len_locale = __struct_len_locale(f));
                         *locale = (char *)*locale + struct_len_locale *
                             (num - lv_len);
+                    }
                 }
 
                 bracket_stack = 1;
@@ -542,8 +630,12 @@ static int __unpackf(void **net, int *left_len, char *format, \
                             (char *)struct_start_locale;
                     }
                     if (lv_type && from == FROM_PTR)
+                    {
+                        if (array_size == 0)
+                            NEG_RET(struct_len_locale = __struct_len_locale(f));
                         *locale = (char *)*locale + struct_len_locale *
                             (num - lv_len);
+                    }
                 }
 
                 bracket_stack = 1;
