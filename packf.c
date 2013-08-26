@@ -365,6 +365,7 @@ static int __packf(void **net, int *left_len, char *format, \
             case ']':
                 return 0;
             case 's':
+            case 'S':
                 des = *net;
                 if (from == FROM_ARG)
                     src = va_arg(va, char *);
@@ -409,7 +410,7 @@ static int __packf(void **net, int *left_len, char *format, \
                         IF_LESS(*left_len, offset);
                         strcpy(des, src);
                     }
-                    else
+                    else if (type == 's')
                     {
                         offset = num;
                         IF_LESS(*left_len, offset);
@@ -427,10 +428,27 @@ static int __packf(void **net, int *left_len, char *format, \
                         for (++i; i < offset; ++i)
                             des[i] = '\0';
                     }
+                    else
+                    {
+                        offset = strnlen(src, num);
+                        if (num && offset == num)
+                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                        offset += num ? 1 : 0;
+                        IF_LESS(*left_len, offset);
+
+                        for (i = 0; i < offset; ++i)
+                            if (!(des[i] = src[i]))
+                                break;
+                    }
 
                     *net = (char *)*net + offset;
                     if (from == FROM_PTR)
-                        *locale = (char *)*locale + offset;
+                    {
+                        if (num >= 0 && type == 'S')
+                            *locale = (char *)*locale + num;
+                        else
+                            *locale = (char *)*locale + offset;
+                    }
                 }
 
                 break;
@@ -655,6 +673,7 @@ static int __unpackf(void **net, int *left_len, char *format, \
             case ']':
                 return 0;
             case 's':
+            case 'S':
                 src = *net;
                 if (from == FROM_ARG)
                     des = va_arg(va, char *);
@@ -701,7 +720,7 @@ static int __unpackf(void **net, int *left_len, char *format, \
                         IF_LESS(*left_len, offset);
                         strcpy(des, src);
                     }
-                    else
+                    else if (type == 's')
                     {
                         offset = num;
                         IF_LESS(*left_len, offset);
@@ -716,10 +735,27 @@ static int __unpackf(void **net, int *left_len, char *format, \
                             ERR_RET_FMT(PACKF_BE_CUT_OFF);
                         }
                     }
+                    else
+                    {
+                        offset = strnlen(src, num);
+                        if (num && offset == num)
+                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                        offset += num ? 1 : 0;
+                        IF_LESS(*left_len, offset);
+
+                        for (i = 0; i < offset; ++i)
+                            if (!(des[i] = src[i]))
+                                break;
+                    }
 
                     *net = (char *)*net + offset;
                     if (from == FROM_PTR)
-                        *locale = (char *)*locale + offset;
+                    {
+                        if (num >= 0 && type == 'S')
+                            *locale = (char *)*locale + num;
+                        else
+                            *locale = (char *)*locale + offset;
+                    }
                 }
 
                 break;

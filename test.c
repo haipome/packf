@@ -26,7 +26,7 @@ void bin_dump(void *pkg, int len)
 
 int main()
 {
-    char buf[256];
+    char buf[8096];
 
 # pragma pack(1)
     struct user
@@ -43,6 +43,7 @@ int main()
         uint32_t        type;
         uint16_t        user_num;
         struct user     user[10];
+        uint16_t        n;
     } users;
 # pragma pack()
 
@@ -52,10 +53,11 @@ int main()
     users.user[0].key   = 0x0102030405060708llu;
     strcpy(users.user[0].name,   "haipoyang");
     strcpy(users.user[0].passwd, "bazinga");
+    users.n             = 10;
 
     packf_print_error = 1;
 
-    int len = packf(buf, sizeof(buf), "cwdDfF[d =10[d -100s D 30s]]16a", \
+    int len = packf(buf, sizeof(buf), "cwdDfF[d =10[d -100s D 30S] w]16a", \
          0xa, 1, 2, 237417076350464llu, 3.4, 5.6, &users);
 
     bin_dump(buf, len);
