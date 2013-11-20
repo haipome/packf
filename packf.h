@@ -114,7 +114,7 @@ extern int packf_print_error;
  *      >= 0 : 成功，返回打包的数据总长度
  *      < 0  : 失败
  */
-extern int packf(void *dest, size_t max, char *format, ...);
+extern int packf(void *dest, size_t max, char const *format, ...);
 
 /*
  * 函数：unpackf : unpack format
@@ -128,7 +128,7 @@ extern int packf(void *dest, size_t max, char *format, ...);
  *      >= 0 : 成功，返回解包的数据总长度
  *      < 0  : 失败
  */
-extern int unpackf(void *src, size_t max, char *format, ...);
+extern int unpackf(void *src, size_t max, char const *format, ...);
 
 /*
  * 函数：vpackf : variable pack format
@@ -145,7 +145,7 @@ extern int unpackf(void *src, size_t max, char *format, ...);
  *             *left:    缓冲区剩余长度
  *      < 0  : 失败
  */
-extern int vpackf(void **current, int *left, char *format, ...);
+extern int vpackf(void **current, int *left, char const *format, ...);
 
 /*
  * 函数：vunpackf : variable unpack format
@@ -162,7 +162,7 @@ extern int vpackf(void **current, int *left, char *format, ...);
  *             *left:    网络序二进制数据剩余长度
  *      < 0  : 失败
  */
-extern int vunpackf(void **current, int *left, char *format, ...);
+extern int vunpackf(void **current, int *left, char const *format, ...);
 
 /*
  * 函数：vpackn : variable pack buffer of n length
@@ -196,8 +196,8 @@ extern int vpackn(void **current, int *left, void *buf, size_t n);
  */
 extern int vunpackn(void **current, int *left, void *buf, size_t n);
 
-extern int vpacka(void **current, int *left, char *format, va_list arg);
-extern int vunpacka(void **current, int *left, char *format, va_list arg);
+extern int vpacka(void **current, int *left, char const *format, va_list arg);
+extern int vunpacka(void **current, int *left, char const *format, va_list arg);
 
 /* 如果结果为负值则返回负的行号 */
 # ifndef NEG_RET_LN

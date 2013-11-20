@@ -62,6 +62,12 @@ int main()
 
     bin_dump(buf, len);
 
+    struct users ue;
+    memset(&ue, 0, sizeof(ue));
+    unpackf(buf, len, "27a[d =10[d -100s D 30S] w]16a", &ue);
+
+    printf("%u\n", ue.n);
+
     return 0;
 }
 

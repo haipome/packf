@@ -8,6 +8,10 @@
  * or commercial. It's free.
  */
 
+# ifndef _GNU_SOURCE
+# define _GNU_SOURCE /* for strnlen */
+# endif
+
 # include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
@@ -17,7 +21,7 @@
 # define FROM_ARG 1
 # define FROM_PTR 2
 
-static char *err_msg[] =
+static char const *err_msg[] =
 {
     "out of buf",
     "not format",
@@ -53,7 +57,7 @@ int packf_print_error = 0;
 } while (0)
 
 # define IF_LESS(x, n) do {                                             \
-    if ((x) < 0 || (x) < (n)) ERR_RET_FMT(PACKF_OUT_OF_BUF);            \
+    if ((x) < (int)(n)) ERR_RET_FMT(PACKF_OUT_OF_BUF);                  \
     (x) -= (n);                                                         \
 } while(0)
 
@@ -64,6 +68,33 @@ int packf_print_error = 0;
 
 # include <endian.h>
 # include <byteswap.h>
+
+# undef htobe16
+# undef htobe32
+# undef htobe64
+# undef htobef
+# undef htobed
+# undef be16toh
+# undef be32toh
+# undef be64toh
+# undef beftoh
+# undef bedtoh
+
+# if __BYTE_ORDER == __LITTLE_ENDIAN
+#  define htobe16(x) bswap_16(x)
+#  define htobe32(x) bswap_32(x)
+#  define htobe64(x) bswap_64(x)
+#  define be16toh(x) bswap_16(x)
+#  define be32toh(x) bswap_32(x)
+#  define be64toh(x) bswap_64(x)
+# else
+#  define htobe16(x) (x)
+#  define htobe32(x) (x)
+#  define htobe64(x) (x)
+#  define be16toh(x) (x)
+#  define be32toh(x) (x)
+#  define be64toh(x) (x)
+# endif
 
 # ifndef __FLOAT_WORD_ORDER
 # define __FLOAT_WORD_ORDER __BYTE_ORDER
@@ -104,7 +135,8 @@ static double __bswap_d(double x)
 
 static inline int __atoi(char *s, size_t n)
 {
-    int r = 0, i;
+    int r = 0;
+    size_t i;
 
     for (i = 0; i < n; ++i)
         r = (r * 10) + (s[i] - '0');
@@ -112,10 +144,10 @@ static inline int __atoi(char *s, size_t n)
     return r;
 }
 
-static int __struct_len_locale(char *format)
+static int __struct_len_locale(char const *format)
 {
     int len = 0, u_len, num, bracket_stack;
-    char *f = format, *__f, *str_num, type;
+    char *f = (char *)format, *__f, *str_num, type;
 
     while (*f)
     {
@@ -261,12 +293,12 @@ static int __struct_len_locale(char *format)
     }                                                                   \
 } while (0)
 
-static int __packf(void **net, int *left_len, char *format, \
+static int __packf(void **net, int *left_len, char const *format, \
         int from, va_list va, void **locale)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = format, *__f, *str_num, *src, *des;
+    char *f = (char *)format, *__f, *str_num, *src, *des;
     char type, lv_type;
     int struct_len_locale = 0;
     void *struct_start_locale, *struct_start_net, *p_struct_len;
@@ -565,12 +597,12 @@ static int __packf(void **net, int *left_len, char *format, \
     }                                                                   \
 } while (0)
 
-static int __unpackf(void **net, int *left_len, char *format, \
+static int __unpackf(void **net, int *left_len, char const *format, \
         int from, va_list va, void **locale)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = format, *__f, *str_num, *src, *des;
+    char *f = (char *)format, *__f, *str_num, *src, *des;
     char type, lv_type;
     int struct_len_locale = 0, struct_len_net = 0;
     void *struct_start_locale, *struct_start_net;
@@ -807,28 +839,7 @@ static int __unpackf(void **net, int *left_len, char *format, \
     return buf_len - *left_len;
 }
 
-static inline int __match(char *format)
-{
-    char *f = format;
-    int bracket_stack = 0;
-
-    while (*f)
-    {
-        if (*f == '[')
-            ++bracket_stack;
-        else if (*f == ']')
-            --bracket_stack;
-
-        ++f;
-    }
-
-    if (bracket_stack != 0)
-        return -1;
-
-    return 0;
-}
-
-int packf(void *dest, size_t max, char *format, ...)
+int packf(void *dest, size_t max, char const *format, ...)
 {
     va_list va;
     int ret, left_len = (int)max;
@@ -838,8 +849,6 @@ int packf(void *dest, size_t max, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -850,7 +859,7 @@ int packf(void *dest, size_t max, char *format, ...)
     return ret;
 }
 
-int unpackf(void *src, size_t max, char *format, ...)
+int unpackf(void *src, size_t max, char const *format, ...)
 {
     va_list va;
     int ret, left_len = (int)max;
@@ -860,8 +869,6 @@ int unpackf(void *src, size_t max, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -872,7 +879,7 @@ int unpackf(void *src, size_t max, char *format, ...)
     return ret;
 }
 
-int vpackf(void **current, int *left, char *format, ...)
+int vpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
     int ret, left_len = *left;
@@ -882,8 +889,6 @@ int vpackf(void **current, int *left, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -900,7 +905,7 @@ int vpackf(void **current, int *left, char *format, ...)
     return ret;
 }
 
-int vunpackf(void **current, int *left, char *format, ...)
+int vunpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
     int ret, left_len = *left;
@@ -910,8 +915,6 @@ int vunpackf(void **current, int *left, char *format, ...)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -928,7 +931,7 @@ int vunpackf(void **current, int *left, char *format, ...)
     return ret;
 }
 
-int vpacka(void **current, int *left, char *format, va_list arg)
+int vpacka(void **current, int *left, char const *format, va_list arg)
 {
     int ret, left_len = *left;
     void *net = *current, *locale = NULL;
@@ -937,8 +940,6 @@ int vpacka(void **current, int *left, char *format, va_list arg)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
@@ -953,7 +954,7 @@ int vpacka(void **current, int *left, char *format, va_list arg)
     return ret;
 }
 
-int vunpacka(void **current, int *left, char *format, va_list arg)
+int vunpacka(void **current, int *left, char const *format, va_list arg)
 {
     int ret, left_len = *left;
     void *net = *current, *locale = NULL;
@@ -962,8 +963,6 @@ int vunpacka(void **current, int *left, char *format, va_list arg)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
     if (!format)
         return 0;
-    if (__match(format) < 0)
-        ERR_RET_PRINT(PACKF_NOT_MATCH);
 
     ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
