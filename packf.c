@@ -345,8 +345,8 @@ static int __packf(void **net, int *left_len, char const *format, \
             case '[':
                 if (lv_type && num == -1)
                 {
-					if (from == FROM_ARG)
-						*locale = va_arg(va, char *);
+                    if (from == FROM_ARG)
+                        *locale = va_arg(va, char *);
 
                     p_struct_len = *net;
                     struct_start_net = *net = (char *)*net + lv_type;
@@ -359,8 +359,8 @@ static int __packf(void **net, int *left_len, char const *format, \
                 else
                 {
                     SET_LV(*net, *locale);
-					if (from == FROM_ARG)
-						*locale = va_arg(va, char *);
+                    if (from == FROM_ARG)
+                        *locale = va_arg(va, char *);
 
                     array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
                     for (i = 0; i < array_size; i++)
@@ -649,8 +649,8 @@ static int __unpackf(void **net, int *left_len, char const *format, \
             case '[':
                 if (lv_type && num == -1)
                 {
-					if (from == FROM_ARG)
-						*locale = va_arg(va, char *);
+                    if (from == FROM_ARG)
+                        *locale = va_arg(va, char *);
 
                     GET_LV_LEN(*net);
                     struct_len_net = lv_len;
@@ -667,8 +667,8 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                 else
                 {
                     GET_LV(*locale, *net);
-					if (from == FROM_ARG)
-						*locale = va_arg(va, char *);
+                    if (from == FROM_ARG)
+                        *locale = va_arg(va, char *);
 
                     array_size = lv_type ? lv_len : (num == -1 ? 1 : num);
                     for (i = 0; i < array_size; i++)
