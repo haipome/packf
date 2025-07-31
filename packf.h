@@ -86,9 +86,9 @@ enum
     PACKF_OUT_OF_BUF    = -1,
     PACKF_NOT_FORMAT    = -2,
     PACKF_NOT_MATCH     = -3,
-    PACKF_EXPECT_FORMAT = -3,
-    PACKF_BE_CUT_OFF    = -4,
-    PACKF_NULL_POINTER  = -5,
+    PACKF_EXPECT_FORMAT = -4,
+    PACKF_BE_CUT_OFF    = -5,
+    PACKF_NULL_POINTER  = -6,
 };
 
 /*
