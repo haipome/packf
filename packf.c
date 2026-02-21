@@ -534,7 +534,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 
 # define SET_LEN(des, len) do {                                         \
     if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)len;               \
-    else *((uint16_t *)(des)) = (uint16_t)lv_len;                       \
+    else *((uint16_t *)(des)) = (uint16_t)len;                          \
 } while (0)
 
 # define GET_LV_LEN(src) do {                                           \
