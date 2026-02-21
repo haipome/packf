@@ -140,8 +140,8 @@ Spaces in the format string are ignored and can be used for readability.
 | `D`  | 8 bytes   | `int64_t` / `uint64_t` |
 | `f`  | 4 bytes   | `float` |
 | `F`  | 8 bytes   | `double` |
-| `s`  | variable  | null-terminated string (pads remaining bytes with `\0` when `num` given) |
-| `S`  | variable  | null-terminated string (no `\0` padding when shorter than `num`) |
+| `s`  | variable  | null-terminated string; with `num`: fixed `num`-byte wire field, padded with `\0` |
+| `S`  | variable  | like `s` without LV prefix + `num`: wire size = `strlen+1` (compact), but local struct pointer advances `num` bytes |
 | `a`  | variable  | zero byte(s) / padding |
 | `[`…`]` | variable | struct (argument must be a `#pragma pack(1)` struct pointer) |
 
@@ -153,9 +153,9 @@ Spaces in the format string are ignored and can be used for readability.
 |--------|-----------|
 | `type` | Single scalar value |
 | `Ntype` | Array of N elements; argument is a pointer |
-| `s` | Pack/unpack string using `strlen + 1` bytes |
-| `Ns` | Fixed N-byte string field; pads with `\0` if shorter |
-| `NS` | Like `Ns` but does not pad with `\0` |
+| `s` | Pack/unpack string using `strlen + 1` bytes on the wire |
+| `Ns` | Fixed N-byte wire field; copies string and pads the rest with `\0` |
+| `NS` | **Compact struct field:** wire = `strlen+1` bytes (variable); local struct pointer advances N bytes |
 
 **With LV prefix (`-` or `=`)**
 
@@ -169,6 +169,31 @@ Spaces in the format string are ignored and can be used for readability.
 | `=N[…]` | 2-byte element count + N struct instances |
 
 > **Structs inside structs:** When an LV field (`-s`, `=N[…]`, etc.) appears inside a `[…]` block, the struct definition must contain the corresponding length member (to stay in sync with the protocol layout), but the member's value is read/written automatically — you do not pass it as an argument.
+
+### `s` vs `S` in depth
+
+`S` only differs from `s` in one specific case: **no LV prefix, with `num`**. In all other cases (no `num`, or with a `-`/`=` prefix) they are identical.
+
+| Format | Wire bytes | Local struct pointer advance | Use case |
+|--------|-----------|------------------------------|----------|
+| `s` | `strlen+1` | `strlen+1` | Plain C string, no fixed field width |
+| `Ns` | fixed `N` | `N` | Fixed-width wire field; receiver always reads exactly N bytes |
+| `NS` | `strlen+1` (variable) | fixed `N` | Compact wire; local struct has `char field[N]` |
+
+**Why `NS` exists — the impedance mismatch problem:**
+
+A struct field like `char passwd[30]` occupies 30 bytes in memory, but the actual password may be much shorter. `30S` solves this by transmitting only the real string data on the wire while still advancing the struct pointer past the full 30-byte field:
+
+```
+Struct in memory:   [b][a][z][i][n][g][a][\0][\0]..[\0]   ← 30 bytes
+Wire with 30s:      [b][a][z][i][n][g][a][\0][\0]..[\0]   ← always 30 bytes
+Wire with 30S:      [b][a][z][i][n][g][a][\0]             ← only 8 bytes
+```
+
+- **Pack (`30S`):** writes `strlen("bazinga")+1 = 8` bytes to the wire; advances the struct pointer by 30.
+- **Unpack (`30S`):** reads from the wire until `\0` (8 bytes); advances the struct pointer by 30.
+
+> **Note:** Because the wire size of `NS` is variable, the receiver cannot treat it as a fixed-width field. The surrounding message framing (e.g. a total length prefix) must define the boundary.
 
 ---
 
@@ -298,9 +323,9 @@ strcpy(msg.users[0].passwd, "s3cr3t");
 /* ... fill users[1] ... */
 
 char buf[1024];
-// =10[...]: 2-byte count of users, up to 10 structs
-// -64s:     1-byte name length + name bytes (max 64 chars including '\0')
-// 32S:      fixed passwd field, no '\0' padding
+// =10[...]: 2-byte user count + up to 10 user structs
+// -64s:     1-byte length prefix + name bytes, no '\0' on wire (max field 64 bytes incl. '\0')
+// 32S:      compact wire (strlen+1 bytes); struct pointer advances 32 bytes to match char passwd[32]
 int len = packf(buf, sizeof(buf),
                 "[ d  =10[d -64s 32S]  ]",
                 &msg);
