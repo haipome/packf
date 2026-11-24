@@ -12,54 +12,32 @@
 # define _GNU_SOURCE /* for strnlen */
 # endif
 
-# include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
+# include <limits.h>
 
 # include "packf.h"
 
 # define FROM_ARG 1
 # define FROM_PTR 2
 
-static char const *err_msg[] =
-{
-    "out of buf",
-    "not format",
-    "not match",
-    "expect format",
-    "be cut off",
-    "null pointer",
-};
-
-char *packf_error_format = NULL;
-int packf_print_error = 0;
-
-# define ERR_RET_FMT(ret) do {                                          \
-    packf_error_format = __f;                                           \
-    return ret;                                                         \
-} while (0)
-
-# define PRINT_ERR_FMT(ret) do {                                        \
-    if ((ret) < 0 && packf_print_error)                                 \
-    {                                                                   \
-        fprintf(stderr, "%s: %s", __func__, err_msg[-(ret) - 1]);       \
-        if (packf_print_error && packf_error_format)                    \
-            fprintf(stderr, ": %s\n", packf_error_format);              \
-        else                                                            \
-            putc('\n', stderr);                                         \
-    }                                                                   \
-} while (0)
-
-# define ERR_RET_PRINT(ret) do {                                        \
-    if (packf_print_error)                                              \
-        fprintf(stderr, "%s: %s\n", __func__, err_msg[-(ret) - 1]);     \
-    return ret;                                                         \
-} while (0)
-
+/* Consume `need` bytes from remaining length `x`, rejecting sizes that
+ * do not fit in a non-negative int (API returns int byte counts). */
 # define IF_LESS(x, n) do {                                             \
-    if ((x) < (int)(n)) ERR_RET_FMT(PACKF_OUT_OF_BUF);                  \
-    (x) -= (n);                                                         \
-} while(0)
+    size_t __need = (size_t)(n);                                        \
+    if (__need > (size_t)INT_MAX || (x) < 0 || (size_t)(x) < __need)    \
+        return PACKF_OUT_OF_BUF;                                  \
+    (x) -= (int)__need;                                                 \
+} while (0)
+
+# define CHECK_ARRAY_OFFSET(type1, array_size, offset_var) do {         \
+    if ((array_size) < 0)                                               \
+        return PACKF_INVALID_ARG;                                 \
+    if ((array_size) > 0 &&                                             \
+        (size_t)(array_size) > (size_t)INT_MAX / sizeof(type1))         \
+        return PACKF_INVALID_ARG;                                 \
+    (offset_var) = (int)(sizeof(type1) * (size_t)(array_size));         \
+} while (0)
 
 # define NEG_RET(x) do {                                                \
     int __ret = (x);                                                    \
@@ -131,23 +109,79 @@ static double __bswap_d(double x)
 
 # define NO_SWAP(x) (x)
 
+/* Unaligned-safe load/store. Wire buffers (and #pragma pack(1) structs)
+ * are not guaranteed to satisfy natural alignment for multi-byte types. */
+static inline void __store_u8(void *dst, uint8_t v)
+{
+    memcpy(dst, &v, sizeof(v));
+}
+
+static inline uint8_t __load_u8(void const *src)
+{
+    uint8_t v;
+    memcpy(&v, src, sizeof(v));
+    return v;
+}
+
+static inline void __store_u16(void *dst, uint16_t v)
+{
+    memcpy(dst, &v, sizeof(v));
+}
+
+static inline uint16_t __load_u16(void const *src)
+{
+    uint16_t v;
+    memcpy(&v, src, sizeof(v));
+    return v;
+}
+
+static inline void __store_u16_be(void *dst, uint16_t v)
+{
+    uint16_t be = htobe16(v);
+    memcpy(dst, &be, sizeof(be));
+}
+
+static inline uint16_t __load_u16_be(void const *src)
+{
+    uint16_t be;
+    memcpy(&be, src, sizeof(be));
+    return be16toh(be);
+}
+
 # define __ISDIGIT(c) ((c) >= '0' && (c) <= '9')
 
-static inline int __atoi(char *s, size_t n)
+/* Parse n decimal digits into *out. Returns 0, or -1 on overflow. */
+static inline int __parse_uint(char const *s, size_t n, int *out)
 {
     int r = 0;
     size_t i;
 
     for (i = 0; i < n; ++i)
-        r = (r * 10) + (s[i] - '0');
+    {
+        int digit = s[i] - '0';
 
-    return r;
+        if (r > (INT_MAX - digit) / 10)
+            return -1;
+        r = r * 10 + digit;
+    }
+
+    *out = r;
+    return 0;
 }
+
+# define PARSE_NUM(str_num, end, num_var, empty_val) do {               \
+    if ((str_num) == (end))                                             \
+        (num_var) = (empty_val);                                        \
+    else if (__parse_uint((str_num),                                    \
+                          (size_t)((end) - (str_num)), &(num_var)) < 0) \
+        return PACKF_INVALID_ARG;                                 \
+} while (0)
 
 static int __struct_len_locale(char const *format)
 {
     int len = 0, u_len, num, bracket_stack;
-    char *f = (char *)format, *__f, *str_num, type;
+    char const *f = format, *str_num;
+    char type;
 
     while (*f)
     {
@@ -156,8 +190,6 @@ static int __struct_len_locale(char const *format)
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -173,14 +205,11 @@ static int __struct_len_locale(char const *format)
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = 1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, 1);
 
         type = *(f++);
         if (!type)
-            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
+            return PACKF_EXPECT_FORMAT;
 
         switch (type)
         {
@@ -206,7 +235,7 @@ static int __struct_len_locale(char const *format)
                 while (bracket_stack)
                 {
                     if (!(*f))
-                        ERR_RET_FMT(PACKF_NOT_MATCH);
+                        return PACKF_NOT_MATCH;
                     else if (*f == '[')
                         ++bracket_stack;
                     else if (*f == ']')
@@ -219,7 +248,7 @@ static int __struct_len_locale(char const *format)
             case ']':
                 return len;
             default:
-                ERR_RET_FMT(PACKF_NOT_FORMAT);
+                return PACKF_NOT_FORMAT;
         }
 
         len += num * u_len;
@@ -230,8 +259,8 @@ static int __struct_len_locale(char const *format)
 
 # define SET_LV_LEN(des) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
-    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)lv_len;            \
-    else *((uint16_t *)(des)) = htobe16((uint16_t)lv_len);              \
+    if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
+    else __store_u16_be(des, (uint16_t)lv_len);                         \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
@@ -241,27 +270,31 @@ static int __struct_len_locale(char const *format)
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
         else                                                            \
         {                                                               \
-            if (lv_type == 1) lv_len = *((uint8_t *)(src));             \
-            else lv_len = *((uint16_t *)(src));                         \
+            if (lv_type == 1) lv_len = (int)__load_u8(src);             \
+            else lv_len = (int)__load_u16(src);                         \
             (src) = (char *)(src) + lv_type;                            \
         }                                                               \
-        if (num != -1 && lv_len > num) ERR_RET_FMT(PACKF_BE_CUT_OFF);   \
+        if (lv_len < 0) return PACKF_INVALID_ARG;                 \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
         SET_LV_LEN(des);                                                \
     }                                                                   \
 } while (0)
 
 # define DO_PACKF(type1, type2, swap, swap_flag) do {                   \
+    type1 __tmp;                                                        \
     SET_LV(*net, *locale);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type1));                              \
         if (from == FROM_ARG)                                           \
-            *((type1 *)(*net)) = swap((type1)(va_arg(va, type2)));      \
+            __tmp = swap((type1)(va_arg(va, type2)));                   \
         else                                                            \
         {                                                               \
-            *((type1 *)(*net)) = swap(*((type1 *)(*locale)));           \
+            memcpy(&__tmp, *locale, sizeof(type1));                     \
+            __tmp = swap(__tmp);                                        \
             *locale = (char *)*locale + sizeof(type1);                  \
         }                                                               \
+        memcpy(*net, &__tmp, sizeof(type1));                            \
         *net = (char *)*net + sizeof(type1);                            \
     }                                                                   \
     else                                                                \
@@ -272,15 +305,23 @@ static int __struct_len_locale(char const *format)
             src = *locale;                                              \
         des = *net;                                                     \
         array_size = lv_type ? lv_len : num;                            \
-        offset = sizeof(type1) * array_size;                            \
+        CHECK_ARRAY_OFFSET(type1, array_size, offset);                  \
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
             if (swap_flag)                                              \
+            {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                    ((type1 *)des)[i] = swap(((type1 *)src)[i]);        \
+                {                                                       \
+                    memcpy(&__tmp, src + i * sizeof(type1),             \
+                           sizeof(type1));                              \
+                    __tmp = swap(__tmp);                                \
+                    memcpy(des + i * sizeof(type1), &__tmp,             \
+                           sizeof(type1));                              \
+                }                                                       \
+            }                                                           \
             else                                                        \
-                memcpy(des, src, offset);                               \
+                memcpy(des, src, (size_t)offset);                       \
             *net = (char *)*net + offset;                               \
         }                                                               \
         if (from == FROM_PTR)                                           \
@@ -298,7 +339,8 @@ static int __packf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = (char *)format, *__f, *str_num, *src, *des;
+    char const *f = format, *str_num;
+    char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0;
     void *struct_start_locale, *struct_start_net, *p_struct_len;
@@ -310,8 +352,6 @@ static int __packf(void **net, int *left_len, char const *format, \
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -331,14 +371,11 @@ static int __packf(void **net, int *left_len, char const *format, \
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = -1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, -1);
 
         type = *(f++);
         if (!type)
-            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
+            return PACKF_EXPECT_FORMAT;
 
         switch (type)
         {
@@ -384,7 +421,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                 while (bracket_stack)
                 {
                     if (!(*f))
-                        ERR_RET_FMT(PACKF_NOT_MATCH);
+                        return PACKF_NOT_MATCH;
                     else if (*f == '[')
                         ++bracket_stack;
                     else if (*f == ']')
@@ -413,7 +450,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     {
                         lv_len = strnlen(src, num - 1);
                         if (src[lv_len])
-                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                            return PACKF_BE_CUT_OFF;
                     }
 
                     SET_LV_LEN(des);
@@ -454,7 +491,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                         if (offset && i == offset)
                         {
                             des[i - 1] = '\0';
-                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                            return PACKF_BE_CUT_OFF;
                         }
 
                         for (++i; i < offset; ++i)
@@ -464,7 +501,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     {
                         offset = strnlen(src, num);
                         if (num && offset == num)
-                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                            return PACKF_BE_CUT_OFF;
                         offset += num ? 1 : 0;
                         IF_LESS(*left_len, offset);
 
@@ -525,7 +562,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 
                 break;
             default:
-                ERR_RET_FMT(PACKF_NOT_FORMAT);
+                return PACKF_NOT_FORMAT;
         }
     }
 
@@ -533,14 +570,14 @@ static int __packf(void **net, int *left_len, char const *format, \
 }
 
 # define SET_LEN(des, len) do {                                         \
-    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)len;               \
-    else *((uint16_t *)(des)) = (uint16_t)len;                          \
+    if (lv_type == 1) __store_u8(des, (uint8_t)(len));                  \
+    else __store_u16(des, (uint16_t)(len));                             \
 } while (0)
 
 # define GET_LV_LEN(src) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
-    if (lv_type == 1) lv_len = *((uint8_t *)(src));                     \
-    else lv_len = be16toh(*((uint16_t *)(src)));                        \
+    if (lv_type == 1) lv_len = (int)__load_u8(src);                     \
+    else lv_len = (int)__load_u16_be(src);                              \
     (src) = (char *)(src) + lv_type;                                    \
 } while (0)
 
@@ -548,22 +585,25 @@ static int __packf(void **net, int *left_len, char const *format, \
     if (lv_type)                                                        \
     {                                                                   \
         GET_LV_LEN(src);                                                \
-        if (num != -1 && lv_len > num) ERR_RET_FMT(PACKF_BE_CUT_OFF);   \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
         if (from == FROM_ARG) SET_LEN(va_arg(va, char *), lv_len);      \
         else { SET_LEN(des, lv_len); (des) = (char *)des + lv_type; }   \
     }                                                                   \
 } while (0)
 
 # define DO_UNPACKF(type, swap, swap_flag) do {                         \
+    type __tmp;                                                         \
     GET_LV(*locale, *net);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type));                               \
+        memcpy(&__tmp, *net, sizeof(type));                             \
+        __tmp = swap(__tmp);                                            \
         if (from == FROM_ARG)                                           \
-            *((type *)(va_arg(va, char *))) = swap(*((type *)(*net)));  \
+            memcpy(va_arg(va, char *), &__tmp, sizeof(type));           \
         else                                                            \
         {                                                               \
-            *((type *)(*locale)) = swap(*((type *)(*net)));             \
+            memcpy(*locale, &__tmp, sizeof(type));                      \
             *locale = (char *)*locale + sizeof(type);                   \
         }                                                               \
         *net = (char *)*net + sizeof(type);                             \
@@ -576,15 +616,23 @@ static int __packf(void **net, int *left_len, char const *format, \
             des = *locale;                                              \
         src = *net;                                                     \
         array_size = lv_type ? lv_len : num;                            \
-        offset = sizeof(type) * array_size;                             \
+        CHECK_ARRAY_OFFSET(type, array_size, offset);                   \
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
             if (swap_flag)                                              \
+            {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                    ((type *)des)[i] = swap(((type *)src)[i]);          \
+                {                                                       \
+                    memcpy(&__tmp, src + i * sizeof(type),              \
+                           sizeof(type));                               \
+                    __tmp = swap(__tmp);                                \
+                    memcpy(des + i * sizeof(type), &__tmp,              \
+                           sizeof(type));                               \
+                }                                                       \
+            }                                                           \
             else                                                        \
-                memcpy(des, src, offset);                               \
+                memcpy(des, src, (size_t)offset);                       \
             *net = (char *)*net + offset;                               \
         }                                                               \
         if (from == FROM_PTR)                                           \
@@ -602,7 +650,8 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = (char *)format, *__f, *str_num, *src, *des;
+    char const *f = format, *str_num;
+    char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0, struct_len_net = 0;
     void *struct_start_locale, *struct_start_net;
@@ -614,8 +663,6 @@ static int __unpackf(void **net, int *left_len, char const *format, \
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -635,14 +682,11 @@ static int __unpackf(void **net, int *left_len, char const *format, \
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = -1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, -1);
 
         type = *(f++);
         if (!type)
-            ERR_RET_FMT(PACKF_EXPECT_FORMAT);
+            return PACKF_EXPECT_FORMAT;
 
         switch (type)
         {
@@ -692,7 +736,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                 while (bracket_stack)
                 {
                     if (!(*f))
-                        ERR_RET_FMT(PACKF_NOT_MATCH);
+                        return PACKF_NOT_MATCH;
                     else if (*f == '[')
                         ++bracket_stack;
                     else if (*f == ']')
@@ -717,7 +761,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                     GET_LV_LEN(src);
 
                     if ((num == 0 && lv_len) || (num > 0 && lv_len > num - 1))
-                        ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                        return PACKF_BE_CUT_OFF;
 
                     if (from == FROM_PTR)
                     {
@@ -748,9 +792,16 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                 {
                     if (num == -1)
                     {
-                        offset = strlen(src) + 1;
+                        size_t slen;
+
+                        if (*left_len < 0)
+                            return PACKF_OUT_OF_BUF;
+                        slen = strnlen(src, (size_t)(*left_len));
+                        if (slen >= (size_t)(*left_len))
+                            return PACKF_OUT_OF_BUF;
+                        offset = (int)slen + 1;
                         IF_LESS(*left_len, offset);
-                        strcpy(des, src);
+                        memcpy(des, src, (size_t)offset);
                     }
                     else if (type == 's')
                     {
@@ -764,20 +815,24 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                         if (offset && i == offset)
                         {
                             des[i - 1] = 0;
-                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                            return PACKF_BE_CUT_OFF;
                         }
                     }
                     else
                     {
-                        offset = strnlen(src, num);
+                        size_t max_scan;
+
+                        if (*left_len < 0)
+                            return PACKF_OUT_OF_BUF;
+                        max_scan = (size_t)num;
+                        if (max_scan > (size_t)(*left_len))
+                            max_scan = (size_t)(*left_len);
+                        offset = (int)strnlen(src, max_scan);
                         if (num && offset == num)
-                            ERR_RET_FMT(PACKF_BE_CUT_OFF);
+                            return PACKF_BE_CUT_OFF;
                         offset += num ? 1 : 0;
                         IF_LESS(*left_len, offset);
-
-                        for (i = 0; i < offset; ++i)
-                            if (!(des[i] = src[i]))
-                                break;
+                        memcpy(des, src, (size_t)offset);
                     }
 
                     *net = (char *)*net + offset;
@@ -832,29 +887,45 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 
                 break;
             default:
-                ERR_RET_FMT(PACKF_NOT_FORMAT);
+                return PACKF_NOT_FORMAT;
         }
     }
 
     return buf_len - *left_len;
 }
 
+static int __check_buf_size(size_t max)
+{
+    if (max > (size_t)INT_MAX)
+        return PACKF_INVALID_ARG;
+    return 0;
+}
+
+static int __check_left(int *left)
+{
+    if (!left || *left < 0)
+        return PACKF_INVALID_ARG;
+    return 0;
+}
+
 int packf(void *dest, size_t max, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = (int)max;
+    int ret, left_len;
     void *net = dest, *locale = NULL;
 
     if (!dest)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_buf_size(max)) < 0)
+        return ret;
     if (!format)
         return 0;
+
+    left_len = (int)max;
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
-
-    PRINT_ERR_FMT(ret);
 
     return ret;
 }
@@ -862,19 +933,21 @@ int packf(void *dest, size_t max, char const *format, ...)
 int unpackf(void *src, size_t max, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = (int)max;
+    int ret, left_len;
     void *net = src, *locale = NULL;
 
     if (!src)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_buf_size(max)) < 0)
+        return ret;
     if (!format)
         return 0;
+
+    left_len = (int)max;
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
-
-    PRINT_ERR_FMT(ret);
 
     return ret;
 }
@@ -882,13 +955,18 @@ int unpackf(void *src, size_t max, char const *format, ...)
 int vpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
     if (!format)
         return 0;
+
+    net = *current;
+    left_len = *left;
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -900,21 +978,24 @@ int vpackf(void **current, int *left, char const *format, ...)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
 int vunpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
     if (!format)
         return 0;
+
+    net = *current;
+    left_len = *left;
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -926,21 +1007,23 @@ int vunpackf(void **current, int *left, char const *format, ...)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
 int vpacka(void **current, int *left, char const *format, va_list arg)
 {
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
     if (!format)
         return 0;
 
+    net = *current;
+    left_len = *left;
     ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
     if (ret > 0)
@@ -949,21 +1032,23 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
 int vunpacka(void **current, int *left, char const *format, va_list arg)
 {
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
     if (!format)
         return 0;
 
+    net = *current;
+    left_len = *left;
     ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
     if (ret > 0)
@@ -972,17 +1057,20 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
-int vpackn(void **current, int *left, void *buf, size_t n)
+int vpackn(void **current, int *left, void const *buf, size_t n)
 {
-    if (!current || !*current || !left || !buf)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+    int ret;
 
-    char *__f = NULL;
+    if (!current || !*current || !left || !buf)
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
+    if (n > (size_t)INT_MAX)
+        return PACKF_INVALID_ARG;
+
     IF_LESS(*left, n);
     memcpy(*current, buf, n);
     *current = (char *)*current + n;
@@ -992,10 +1080,15 @@ int vpackn(void **current, int *left, void *buf, size_t n)
 
 int vunpackn(void **current, int *left, void *buf, size_t n)
 {
-    if (!current || !*current || !left || !buf)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+    int ret;
 
-    char *__f = NULL;
+    if (!current || !*current || !left || !buf)
+        return PACKF_NULL_POINTER;
+    if ((ret = __check_left(left)) < 0)
+        return ret;
+    if (n > (size_t)INT_MAX)
+        return PACKF_INVALID_ARG;
+
     IF_LESS(*left, n);
     memcpy(buf, *current, n);
     *current = (char *)*current + n;
