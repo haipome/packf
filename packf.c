@@ -12,7 +12,6 @@
 # define _GNU_SOURCE /* for strnlen */
 # endif
 
-# include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
 # include <limits.h>
@@ -22,41 +21,7 @@
 # define FROM_ARG 1
 # define FROM_PTR 2
 
-static char const *err_msg[] =
-{
-    "out of buf",
-    "not format",
-    "not match",
-    "expect format",
-    "be cut off",
-    "null pointer",
-    "invalid argument",
-};
-
-char const *packf_error_format = NULL;
-int packf_print_error = 0;
-
-# define ERR_RET_FMT(ret) do {                                          \
-    packf_error_format = __f;                                           \
-    return ret;                                                         \
-} while (0)
-
-# define PRINT_ERR_FMT(ret) do {                                        \
-    if ((ret) < 0 && packf_print_error)                                 \
-    {                                                                   \
-        fprintf(stderr, "%s: %s", __func__, err_msg[-(ret) - 1]);       \
-        if (packf_print_error && packf_error_format)                    \
-            fprintf(stderr, ": %s\n", packf_error_format);              \
-        else                                                            \
-            putc('\n', stderr);                                         \
-    }                                                                   \
-} while (0)
-
-# define ERR_RET_PRINT(ret) do {                                        \
-    if (packf_print_error)                                              \
-        fprintf(stderr, "%s: %s\n", __func__, err_msg[-(ret) - 1]);     \
-    return ret;                                                         \
-} while (0)
+# define ERR_RET_FMT(ret) return (ret)
 
 /* Consume `need` bytes from remaining length `x`, rejecting sizes that
  * do not fit in a non-negative int (API returns int byte counts). */
@@ -217,7 +182,7 @@ static inline int __parse_uint(char const *s, size_t n, int *out)
 static int __struct_len_locale(char const *format)
 {
     int len = 0, u_len, num, bracket_stack;
-    char const *f = format, *__f, *str_num;
+    char const *f = format, *str_num;
     char type;
 
     while (*f)
@@ -227,8 +192,6 @@ static int __struct_len_locale(char const *format)
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -378,7 +341,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char const *f = format, *__f, *str_num;
+    char const *f = format, *str_num;
     char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0;
@@ -391,8 +354,6 @@ static int __packf(void **net, int *left_len, char const *format, \
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -691,7 +652,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char const *f = format, *__f, *str_num;
+    char const *f = format, *str_num;
     char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0, struct_len_net = 0;
@@ -704,8 +665,6 @@ static int __unpackf(void **net, int *left_len, char const *format, \
             ++f;
             continue;
         }
-
-        __f = f;
 
         if (*f == '-')
         {
@@ -958,9 +917,9 @@ int packf(void *dest, size_t max, char const *format, ...)
     void *net = dest, *locale = NULL;
 
     if (!dest)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_buf_size(max)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -969,8 +928,6 @@ int packf(void *dest, size_t max, char const *format, ...)
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
-
-    PRINT_ERR_FMT(ret);
 
     return ret;
 }
@@ -982,9 +939,9 @@ int unpackf(void *src, size_t max, char const *format, ...)
     void *net = src, *locale = NULL;
 
     if (!src)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_buf_size(max)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -993,8 +950,6 @@ int unpackf(void *src, size_t max, char const *format, ...)
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
     va_end(va);
-
-    PRINT_ERR_FMT(ret);
 
     return ret;
 }
@@ -1006,9 +961,9 @@ int vpackf(void **current, int *left, char const *format, ...)
     void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -1025,8 +980,6 @@ int vpackf(void **current, int *left, char const *format, ...)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
@@ -1037,9 +990,9 @@ int vunpackf(void **current, int *left, char const *format, ...)
     void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -1056,8 +1009,6 @@ int vunpackf(void **current, int *left, char const *format, ...)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
@@ -1067,9 +1018,9 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
     void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -1083,8 +1034,6 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
@@ -1094,9 +1043,9 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
     void *net, *locale = NULL;
 
     if (!current || !*current || !left)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (!format)
         return 0;
 
@@ -1110,8 +1059,6 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
         *left    = left_len;
     }
 
-    PRINT_ERR_FMT(ret);
-
     return ret;
 }
 
@@ -1120,16 +1067,13 @@ int vpackn(void **current, int *left, void const *buf, size_t n)
     int ret;
 
     if (!current || !*current || !left || !buf)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (n > (size_t)INT_MAX)
-        ERR_RET_PRINT(PACKF_INVALID_ARG);
+        ERR_RET_FMT(PACKF_INVALID_ARG);
 
-    {
-        char const *__f = NULL;
-        IF_LESS(*left, n);
-    }
+    IF_LESS(*left, n);
     memcpy(*current, buf, n);
     *current = (char *)*current + n;
 
@@ -1141,16 +1085,13 @@ int vunpackn(void **current, int *left, void *buf, size_t n)
     int ret;
 
     if (!current || !*current || !left || !buf)
-        ERR_RET_PRINT(PACKF_NULL_POINTER);
+        ERR_RET_FMT(PACKF_NULL_POINTER);
     if ((ret = __check_left(left)) < 0)
-        ERR_RET_PRINT(ret);
+        ERR_RET_FMT(ret);
     if (n > (size_t)INT_MAX)
-        ERR_RET_PRINT(PACKF_INVALID_ARG);
+        ERR_RET_FMT(PACKF_INVALID_ARG);
 
-    {
-        char const *__f = NULL;
-        IF_LESS(*left, n);
-    }
+    IF_LESS(*left, n);
     memcpy(buf, *current, n);
     *current = (char *)*current + n;
 

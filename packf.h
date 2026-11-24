@@ -91,6 +91,25 @@ extern "C"
  *      2): Structs support nesting, i.e. a struct may contain other structs.
  */
 
+/*
+ * Error codes (negative return values from packf / unpackf / vpack* / …)
+ *
+ *   PACKF_OUT_OF_BUF    (-1)  Destination or source buffer too small;
+ *                             or a bare string field has no '\0' within
+ *                             the remaining input.
+ *   PACKF_NOT_FORMAT    (-2)  Unknown type character in the format string.
+ *   PACKF_NOT_MATCH     (-3)  Unmatched '[' / ']' in the format string.
+ *   PACKF_EXPECT_FORMAT (-4)  Format string ended where a type was expected.
+ *   PACKF_BE_CUT_OFF    (-5)  Data would be truncated (e.g. LV length or
+ *                             string longer than the declared maximum).
+ *   PACKF_NULL_POINTER  (-6)  A required pointer argument was NULL.
+ *   PACKF_INVALID_ARG   (-7)  Invalid size or length: negative LV length,
+ *                             size / remaining length > INT_MAX or < 0,
+ *                             format count overflow, array size overflow.
+ *
+ * Callers should check the return value against these codes. There is no
+ * global error state — the return code alone is sufficient and thread-safe.
+ */
 enum
 {
     PACKF_OUT_OF_BUF    = -1,
@@ -99,26 +118,8 @@ enum
     PACKF_EXPECT_FORMAT = -4,
     PACKF_BE_CUT_OFF    = -5,
     PACKF_NULL_POINTER  = -6,
-    PACKF_INVALID_ARG   = -7,  /* negative length, size > INT_MAX,
-                                  format number overflow, etc. */
+    PACKF_INVALID_ARG   = -7,
 };
-
-/*
- * On error, if packf_error_format is not NULL, it points to the position
- * in the format string where the error occurred, which can be printed to
- * help locate the error.
- *
- * Note: this global is not thread-safe.
- */
-extern char const *packf_error_format;
-
-/*
- * If packf_print_error is non-zero, error messages are printed to stderr
- * when an error occurs.
- *
- * Note: this global is not thread-safe.
- */
-extern int packf_print_error;
 
 /*
  * Function: packf : pack format

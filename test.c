@@ -155,7 +155,6 @@ static void test_format_num_overflow(void)
     /* INT_MAX + 1 as a decimal count in the format string */
     r = packf(buf, sizeof(buf), "2147483648c");
     assert(r == PACKF_INVALID_ARG);
-    assert(packf_error_format != NULL);
 
     /* INT_MAX itself must still parse (then fail on buffer size). */
     r = packf(buf, sizeof(buf), "2147483647a");
@@ -185,8 +184,6 @@ static void test_vpack_cursor_on_failure(void)
 
 int main(void)
 {
-    packf_print_error = 0;
-
     test_roundtrip();
     test_unterminated_s();
     test_unaligned_fields();
