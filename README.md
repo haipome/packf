@@ -74,7 +74,7 @@ int vpacka  (void **current, int *left, const char *format, va_list arg);
 int vunpacka(void **current, int *left, const char *format, va_list arg);
 
 // Pack/unpack a raw buffer of exactly n bytes.
-int vpackn  (void **current, int *left, void *buf, size_t n);
+int vpackn  (void **current, int *left, const void *buf, size_t n);
 int vunpackn(void **current, int *left, void *buf, size_t n);
 ```
 
@@ -82,11 +82,18 @@ int vunpackn(void **current, int *left, void *buf, size_t n);
 
 ```c
 // Points to the format character where the last error occurred.
-extern char *packf_error_format;
+// Not thread-safe.
+extern const char *packf_error_format;
 
 // Set to non-zero to print error messages to stderr automatically.
+// Not thread-safe.
 extern int packf_print_error;
 ```
+
+### Failure semantics
+
+- **`packf` / `unpackf`:** on failure the destination buffer / output arguments may already be partially written — discard or retry; do not trust the contents.
+- **`vpackf` / `vunpackf` / `vpacka` / `vunpacka` / `vpackn` / `vunpackn`:** on failure `*current` and `*left` are left unchanged. The buffer at `*current` (or output args for unpack) may still have been partially written.
 
 ### Error codes
 
@@ -98,7 +105,7 @@ extern int packf_print_error;
 | `PACKF_EXPECT_FORMAT` | -4 | Format string ended unexpectedly |
 | `PACKF_BE_CUT_OFF`    | -5 | Data would be truncated |
 | `PACKF_NULL_POINTER`  | -6 | NULL pointer argument |
-| `PACKF_INVALID_ARG`   | -7 | Invalid size/length (e.g. negative LV length, size > `INT_MAX`) |
+| `PACKF_INVALID_ARG`   | -7 | Invalid size/length (negative LV length, size > `INT_MAX`, format number overflow, etc.) |
 
 ### Helper macros
 

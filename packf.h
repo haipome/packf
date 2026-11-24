@@ -99,19 +99,24 @@ enum
     PACKF_EXPECT_FORMAT = -4,
     PACKF_BE_CUT_OFF    = -5,
     PACKF_NULL_POINTER  = -6,
-    PACKF_INVALID_ARG   = -7,  /* negative length, size > INT_MAX, etc. */
+    PACKF_INVALID_ARG   = -7,  /* negative length, size > INT_MAX,
+                                  format number overflow, etc. */
 };
 
 /*
  * On error, if packf_error_format is not NULL, it points to the position
  * in the format string where the error occurred, which can be printed to
  * help locate the error.
+ *
+ * Note: this global is not thread-safe.
  */
-extern char *packf_error_format;
+extern char const *packf_error_format;
 
 /*
  * If packf_print_error is non-zero, error messages are printed to stderr
  * when an error occurs.
+ *
+ * Note: this global is not thread-safe.
  */
 extern int packf_print_error;
 
@@ -127,6 +132,9 @@ extern int packf_print_error;
  * Return value:
  *      >= 0 : success, returns the total number of bytes packed
  *      < 0  : failure
+ * Failure semantics:
+ *      On failure, dest may have been partially written; do not rely on
+ *      its contents. Treat the operation as failed and discard/retry.
  */
 extern int packf(void *dest, size_t max, char const *format, ...);
 
@@ -142,6 +150,9 @@ extern int packf(void *dest, size_t max, char const *format, ...);
  * Return value:
  *      >= 0 : success, returns the total number of bytes unpacked
  *      < 0  : failure
+ * Failure semantics:
+ *      On failure, output arguments may have been partially written; do
+ *      not rely on their contents.
  */
 extern int unpackf(void *src, size_t max, char const *format, ...);
 
@@ -159,7 +170,10 @@ extern int unpackf(void *src, size_t max, char const *format, ...);
  *      >= 0 : success, returns the total number of bytes packed
  *             *current: updated to the next available address in the buffer
  *             *left:    updated remaining buffer length
- *      < 0  : failure
+ *      < 0  : failure — *current and *left are left unchanged
+ * Failure semantics:
+ *      On failure the cursor is not advanced, but the buffer at *current
+ *      may have been partially written; do not rely on those bytes.
  */
 extern int vpackf(void **current, int *left, char const *format, ...);
 
@@ -177,7 +191,10 @@ extern int vpackf(void **current, int *left, char const *format, ...);
  *      >= 0 : success, returns the total number of bytes unpacked
  *             *current: updated to the next address in the network data
  *             *left:    updated remaining network data length
- *      < 0  : failure
+ *      < 0  : failure — *current and *left are left unchanged
+ * Failure semantics:
+ *      On failure the cursor is not advanced, but output arguments may
+ *      have been partially written; do not rely on their contents.
  */
 extern int vunpackf(void **current, int *left, char const *format, ...);
 
@@ -193,9 +210,9 @@ extern int vunpackf(void **current, int *left, char const *format, ...);
  *      >= 0 : success, returns the total number of bytes packed
  *             *current: updated to the next available address in the buffer
  *             *left:    updated remaining buffer length
- *      < 0  : failure
+ *      < 0  : failure — *current and *left are left unchanged
  */
-extern int vpackn(void **current, int *left, void *buf, size_t n);
+extern int vpackn(void **current, int *left, void const *buf, size_t n);
 
 /*
  * Function: vunpackn : variable unpack buffer of n length
@@ -209,7 +226,7 @@ extern int vpackn(void **current, int *left, void *buf, size_t n);
  *      >= 0 : success, returns the total number of bytes unpacked
  *             *current: updated to the next address in the network data
  *             *left:    updated remaining network data length
- *      < 0  : failure
+ *      < 0  : failure — *current and *left are left unchanged
  */
 extern int vunpackn(void **current, int *left, void *buf, size_t n);
 

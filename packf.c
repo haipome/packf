@@ -33,7 +33,7 @@ static char const *err_msg[] =
     "invalid argument",
 };
 
-char *packf_error_format = NULL;
+char const *packf_error_format = NULL;
 int packf_print_error = 0;
 
 # define ERR_RET_FMT(ret) do {                                          \
@@ -187,21 +187,38 @@ static inline uint16_t __load_u16_be(void const *src)
 
 # define __ISDIGIT(c) ((c) >= '0' && (c) <= '9')
 
-static inline int __atoi(char *s, size_t n)
+/* Parse n decimal digits into *out. Returns 0, or -1 on overflow. */
+static inline int __parse_uint(char const *s, size_t n, int *out)
 {
     int r = 0;
     size_t i;
 
     for (i = 0; i < n; ++i)
-        r = (r * 10) + (s[i] - '0');
+    {
+        int digit = s[i] - '0';
 
-    return r;
+        if (r > (INT_MAX - digit) / 10)
+            return -1;
+        r = r * 10 + digit;
+    }
+
+    *out = r;
+    return 0;
 }
+
+# define PARSE_NUM(str_num, end, num_var, empty_val) do {               \
+    if ((str_num) == (end))                                             \
+        (num_var) = (empty_val);                                        \
+    else if (__parse_uint((str_num),                                    \
+                          (size_t)((end) - (str_num)), &(num_var)) < 0) \
+        ERR_RET_FMT(PACKF_INVALID_ARG);                                 \
+} while (0)
 
 static int __struct_len_locale(char const *format)
 {
     int len = 0, u_len, num, bracket_stack;
-    char *f = (char *)format, *__f, *str_num, type;
+    char const *f = format, *__f, *str_num;
+    char type;
 
     while (*f)
     {
@@ -227,10 +244,7 @@ static int __struct_len_locale(char const *format)
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = 1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, 1);
 
         type = *(f++);
         if (!type)
@@ -364,7 +378,8 @@ static int __packf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = (char *)format, *__f, *str_num, *src, *des;
+    char const *f = format, *__f, *str_num;
+    char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0;
     void *struct_start_locale, *struct_start_net, *p_struct_len;
@@ -397,10 +412,7 @@ static int __packf(void **net, int *left_len, char const *format, \
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = -1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, -1);
 
         type = *(f++);
         if (!type)
@@ -679,7 +691,8 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
-    char *f = (char *)format, *__f, *str_num, *src, *des;
+    char const *f = format, *__f, *str_num;
+    char *src, *des;
     char type, lv_type;
     int struct_len_locale = 0, struct_len_net = 0;
     void *struct_start_locale, *struct_start_net;
@@ -712,10 +725,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
         str_num = f;
         while (__ISDIGIT(*f))
             ++f;
-        if (str_num == f)
-            num = -1;
-        else
-            num = __atoi(str_num, f - str_num);
+        PARSE_NUM(str_num, f, num, -1);
 
         type = *(f++);
         if (!type)
@@ -1105,7 +1115,7 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
     return ret;
 }
 
-int vpackn(void **current, int *left, void *buf, size_t n)
+int vpackn(void **current, int *left, void const *buf, size_t n)
 {
     int ret;
 
@@ -1117,7 +1127,7 @@ int vpackn(void **current, int *left, void *buf, size_t n)
         ERR_RET_PRINT(PACKF_INVALID_ARG);
 
     {
-        char *__f = NULL;
+        char const *__f = NULL;
         IF_LESS(*left, n);
     }
     memcpy(*current, buf, n);
@@ -1138,7 +1148,7 @@ int vunpackn(void **current, int *left, void *buf, size_t n)
         ERR_RET_PRINT(PACKF_INVALID_ARG);
 
     {
-        char *__f = NULL;
+        char const *__f = NULL;
         IF_LESS(*left, n);
     }
     memcpy(buf, *current, n);

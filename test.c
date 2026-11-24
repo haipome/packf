@@ -146,6 +146,43 @@ static void test_negative_lv(void)
     printf("negative lv: ok (ret=%d)\n", r);
 }
 
+/* Format count larger than INT_MAX must be rejected. */
+static void test_format_num_overflow(void)
+{
+    char buf[16];
+    int r;
+
+    /* INT_MAX + 1 as a decimal count in the format string */
+    r = packf(buf, sizeof(buf), "2147483648c");
+    assert(r == PACKF_INVALID_ARG);
+    assert(packf_error_format != NULL);
+
+    /* INT_MAX itself must still parse (then fail on buffer size). */
+    r = packf(buf, sizeof(buf), "2147483647a");
+    assert(r == PACKF_OUT_OF_BUF);
+
+    printf("format num overflow: ok\n");
+}
+
+/* vpack* must not advance the cursor when packing fails mid-way. */
+static void test_vpack_cursor_on_failure(void)
+{
+    char buf[8];
+    void *cur = buf;
+    int left = (int)sizeof(buf);
+    void *cur0 = cur;
+    int left0 = left;
+    int r;
+
+    /* First byte fits; 8-byte D does not — overall call fails. */
+    r = vpackf(&cur, &left, "c D", 1, (int64_t)0x0102030405060708LL);
+    assert(r < 0);
+    assert(cur == cur0);
+    assert(left == left0);
+
+    printf("vpack cursor on failure: ok\n");
+}
+
 int main(void)
 {
     packf_print_error = 0;
@@ -155,6 +192,8 @@ int main(void)
     test_unaligned_fields();
     test_size_too_large();
     test_negative_lv();
+    test_format_num_overflow();
+    test_vpack_cursor_on_failure();
 
     printf("all tests passed\n");
     return 0;
