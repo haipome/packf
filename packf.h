@@ -99,6 +99,7 @@ enum
     PACKF_EXPECT_FORMAT = -4,
     PACKF_BE_CUT_OFF    = -5,
     PACKF_NULL_POINTER  = -6,
+    PACKF_INVALID_ARG   = -7,  /* negative length, size > INT_MAX, etc. */
 };
 
 /*

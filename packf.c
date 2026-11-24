@@ -15,6 +15,7 @@
 # include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
+# include <limits.h>
 
 # include "packf.h"
 
@@ -29,6 +30,7 @@ static char const *err_msg[] =
     "expect format",
     "be cut off",
     "null pointer",
+    "invalid argument",
 };
 
 char *packf_error_format = NULL;
@@ -56,10 +58,23 @@ int packf_print_error = 0;
     return ret;                                                         \
 } while (0)
 
+/* Consume `need` bytes from remaining length `x`, rejecting sizes that
+ * do not fit in a non-negative int (API returns int byte counts). */
 # define IF_LESS(x, n) do {                                             \
-    if ((x) < (int)(n)) ERR_RET_FMT(PACKF_OUT_OF_BUF);                  \
-    (x) -= (n);                                                         \
-} while(0)
+    size_t __need = (size_t)(n);                                        \
+    if (__need > (size_t)INT_MAX || (x) < 0 || (size_t)(x) < __need)    \
+        ERR_RET_FMT(PACKF_OUT_OF_BUF);                                  \
+    (x) -= (int)__need;                                                 \
+} while (0)
+
+# define CHECK_ARRAY_OFFSET(type1, array_size, offset_var) do {         \
+    if ((array_size) < 0)                                               \
+        ERR_RET_FMT(PACKF_INVALID_ARG);                                 \
+    if ((array_size) > 0 &&                                             \
+        (size_t)(array_size) > (size_t)INT_MAX / sizeof(type1))         \
+        ERR_RET_FMT(PACKF_INVALID_ARG);                                 \
+    (offset_var) = (int)(sizeof(type1) * (size_t)(array_size));         \
+} while (0)
 
 # define NEG_RET(x) do {                                                \
     int __ret = (x);                                                    \
@@ -130,6 +145,45 @@ static double __bswap_d(double x)
 # endif
 
 # define NO_SWAP(x) (x)
+
+/* Unaligned-safe load/store. Wire buffers (and #pragma pack(1) structs)
+ * are not guaranteed to satisfy natural alignment for multi-byte types. */
+static inline void __store_u8(void *dst, uint8_t v)
+{
+    memcpy(dst, &v, sizeof(v));
+}
+
+static inline uint8_t __load_u8(void const *src)
+{
+    uint8_t v;
+    memcpy(&v, src, sizeof(v));
+    return v;
+}
+
+static inline void __store_u16(void *dst, uint16_t v)
+{
+    memcpy(dst, &v, sizeof(v));
+}
+
+static inline uint16_t __load_u16(void const *src)
+{
+    uint16_t v;
+    memcpy(&v, src, sizeof(v));
+    return v;
+}
+
+static inline void __store_u16_be(void *dst, uint16_t v)
+{
+    uint16_t be = htobe16(v);
+    memcpy(dst, &be, sizeof(be));
+}
+
+static inline uint16_t __load_u16_be(void const *src)
+{
+    uint16_t be;
+    memcpy(&be, src, sizeof(be));
+    return be16toh(be);
+}
 
 # define __ISDIGIT(c) ((c) >= '0' && (c) <= '9')
 
@@ -230,8 +284,8 @@ static int __struct_len_locale(char const *format)
 
 # define SET_LV_LEN(des) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
-    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)lv_len;            \
-    else *((uint16_t *)(des)) = htobe16((uint16_t)lv_len);              \
+    if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
+    else __store_u16_be(des, (uint16_t)lv_len);                         \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
@@ -241,27 +295,31 @@ static int __struct_len_locale(char const *format)
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
         else                                                            \
         {                                                               \
-            if (lv_type == 1) lv_len = *((uint8_t *)(src));             \
-            else lv_len = *((uint16_t *)(src));                         \
+            if (lv_type == 1) lv_len = (int)__load_u8(src);             \
+            else lv_len = (int)__load_u16(src);                         \
             (src) = (char *)(src) + lv_type;                            \
         }                                                               \
+        if (lv_len < 0) ERR_RET_FMT(PACKF_INVALID_ARG);                 \
         if (num != -1 && lv_len > num) ERR_RET_FMT(PACKF_BE_CUT_OFF);   \
         SET_LV_LEN(des);                                                \
     }                                                                   \
 } while (0)
 
 # define DO_PACKF(type1, type2, swap, swap_flag) do {                   \
+    type1 __tmp;                                                        \
     SET_LV(*net, *locale);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type1));                              \
         if (from == FROM_ARG)                                           \
-            *((type1 *)(*net)) = swap((type1)(va_arg(va, type2)));      \
+            __tmp = swap((type1)(va_arg(va, type2)));                   \
         else                                                            \
         {                                                               \
-            *((type1 *)(*net)) = swap(*((type1 *)(*locale)));           \
+            memcpy(&__tmp, *locale, sizeof(type1));                     \
+            __tmp = swap(__tmp);                                        \
             *locale = (char *)*locale + sizeof(type1);                  \
         }                                                               \
+        memcpy(*net, &__tmp, sizeof(type1));                            \
         *net = (char *)*net + sizeof(type1);                            \
     }                                                                   \
     else                                                                \
@@ -272,15 +330,23 @@ static int __struct_len_locale(char const *format)
             src = *locale;                                              \
         des = *net;                                                     \
         array_size = lv_type ? lv_len : num;                            \
-        offset = sizeof(type1) * array_size;                            \
+        CHECK_ARRAY_OFFSET(type1, array_size, offset);                  \
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
             if (swap_flag)                                              \
+            {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                    ((type1 *)des)[i] = swap(((type1 *)src)[i]);        \
+                {                                                       \
+                    memcpy(&__tmp, src + i * sizeof(type1),             \
+                           sizeof(type1));                              \
+                    __tmp = swap(__tmp);                                \
+                    memcpy(des + i * sizeof(type1), &__tmp,             \
+                           sizeof(type1));                              \
+                }                                                       \
+            }                                                           \
             else                                                        \
-                memcpy(des, src, offset);                               \
+                memcpy(des, src, (size_t)offset);                       \
             *net = (char *)*net + offset;                               \
         }                                                               \
         if (from == FROM_PTR)                                           \
@@ -533,14 +599,14 @@ static int __packf(void **net, int *left_len, char const *format, \
 }
 
 # define SET_LEN(des, len) do {                                         \
-    if (lv_type == 1) *((uint8_t *)(des)) = (uint8_t)len;               \
-    else *((uint16_t *)(des)) = (uint16_t)len;                          \
+    if (lv_type == 1) __store_u8(des, (uint8_t)(len));                  \
+    else __store_u16(des, (uint16_t)(len));                             \
 } while (0)
 
 # define GET_LV_LEN(src) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
-    if (lv_type == 1) lv_len = *((uint8_t *)(src));                     \
-    else lv_len = be16toh(*((uint16_t *)(src)));                        \
+    if (lv_type == 1) lv_len = (int)__load_u8(src);                     \
+    else lv_len = (int)__load_u16_be(src);                              \
     (src) = (char *)(src) + lv_type;                                    \
 } while (0)
 
@@ -555,15 +621,18 @@ static int __packf(void **net, int *left_len, char const *format, \
 } while (0)
 
 # define DO_UNPACKF(type, swap, swap_flag) do {                         \
+    type __tmp;                                                         \
     GET_LV(*locale, *net);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type));                               \
+        memcpy(&__tmp, *net, sizeof(type));                             \
+        __tmp = swap(__tmp);                                            \
         if (from == FROM_ARG)                                           \
-            *((type *)(va_arg(va, char *))) = swap(*((type *)(*net)));  \
+            memcpy(va_arg(va, char *), &__tmp, sizeof(type));           \
         else                                                            \
         {                                                               \
-            *((type *)(*locale)) = swap(*((type *)(*net)));             \
+            memcpy(*locale, &__tmp, sizeof(type));                      \
             *locale = (char *)*locale + sizeof(type);                   \
         }                                                               \
         *net = (char *)*net + sizeof(type);                             \
@@ -576,15 +645,23 @@ static int __packf(void **net, int *left_len, char const *format, \
             des = *locale;                                              \
         src = *net;                                                     \
         array_size = lv_type ? lv_len : num;                            \
-        offset = sizeof(type) * array_size;                             \
+        CHECK_ARRAY_OFFSET(type, array_size, offset);                   \
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
             if (swap_flag)                                              \
+            {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                    ((type *)des)[i] = swap(((type *)src)[i]);          \
+                {                                                       \
+                    memcpy(&__tmp, src + i * sizeof(type),              \
+                           sizeof(type));                               \
+                    __tmp = swap(__tmp);                                \
+                    memcpy(des + i * sizeof(type), &__tmp,              \
+                           sizeof(type));                               \
+                }                                                       \
+            }                                                           \
             else                                                        \
-                memcpy(des, src, offset);                               \
+                memcpy(des, src, (size_t)offset);                       \
             *net = (char *)*net + offset;                               \
         }                                                               \
         if (from == FROM_PTR)                                           \
@@ -748,9 +825,16 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                 {
                     if (num == -1)
                     {
-                        offset = strlen(src) + 1;
+                        size_t slen;
+
+                        if (*left_len < 0)
+                            ERR_RET_FMT(PACKF_OUT_OF_BUF);
+                        slen = strnlen(src, (size_t)(*left_len));
+                        if (slen >= (size_t)(*left_len))
+                            ERR_RET_FMT(PACKF_OUT_OF_BUF);
+                        offset = (int)slen + 1;
                         IF_LESS(*left_len, offset);
-                        strcpy(des, src);
+                        memcpy(des, src, (size_t)offset);
                     }
                     else if (type == 's')
                     {
@@ -769,15 +853,19 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                     }
                     else
                     {
-                        offset = strnlen(src, num);
+                        size_t max_scan;
+
+                        if (*left_len < 0)
+                            ERR_RET_FMT(PACKF_OUT_OF_BUF);
+                        max_scan = (size_t)num;
+                        if (max_scan > (size_t)(*left_len))
+                            max_scan = (size_t)(*left_len);
+                        offset = (int)strnlen(src, max_scan);
                         if (num && offset == num)
                             ERR_RET_FMT(PACKF_BE_CUT_OFF);
                         offset += num ? 1 : 0;
                         IF_LESS(*left_len, offset);
-
-                        for (i = 0; i < offset; ++i)
-                            if (!(des[i] = src[i]))
-                                break;
+                        memcpy(des, src, (size_t)offset);
                     }
 
                     *net = (char *)*net + offset;
@@ -839,16 +927,34 @@ static int __unpackf(void **net, int *left_len, char const *format, \
     return buf_len - *left_len;
 }
 
+static int __check_buf_size(size_t max)
+{
+    if (max > (size_t)INT_MAX)
+        return PACKF_INVALID_ARG;
+    return 0;
+}
+
+static int __check_left(int *left)
+{
+    if (!left || *left < 0)
+        return PACKF_INVALID_ARG;
+    return 0;
+}
+
 int packf(void *dest, size_t max, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = (int)max;
+    int ret, left_len;
     void *net = dest, *locale = NULL;
 
     if (!dest)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_buf_size(max)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
+
+    left_len = (int)max;
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -862,13 +968,17 @@ int packf(void *dest, size_t max, char const *format, ...)
 int unpackf(void *src, size_t max, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = (int)max;
+    int ret, left_len;
     void *net = src, *locale = NULL;
 
     if (!src)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_buf_size(max)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
+
+    left_len = (int)max;
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -882,13 +992,18 @@ int unpackf(void *src, size_t max, char const *format, ...)
 int vpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
+
+    net = *current;
+    left_len = *left;
 
     va_start(va, format);
     ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -908,13 +1023,18 @@ int vpackf(void **current, int *left, char const *format, ...)
 int vunpackf(void **current, int *left, char const *format, ...)
 {
     va_list va;
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
+
+    net = *current;
+    left_len = *left;
 
     va_start(va, format);
     ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
@@ -933,14 +1053,18 @@ int vunpackf(void **current, int *left, char const *format, ...)
 
 int vpacka(void **current, int *left, char const *format, va_list arg)
 {
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
 
+    net = *current;
+    left_len = *left;
     ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
     if (ret > 0)
@@ -956,14 +1080,18 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
 
 int vunpacka(void **current, int *left, char const *format, va_list arg)
 {
-    int ret, left_len = *left;
-    void *net = *current, *locale = NULL;
+    int ret, left_len;
+    void *net, *locale = NULL;
 
     if (!current || !*current || !left)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
     if (!format)
         return 0;
 
+    net = *current;
+    left_len = *left;
     ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale);
 
     if (ret > 0)
@@ -979,11 +1107,19 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
 
 int vpackn(void **current, int *left, void *buf, size_t n)
 {
+    int ret;
+
     if (!current || !*current || !left || !buf)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
+    if (n > (size_t)INT_MAX)
+        ERR_RET_PRINT(PACKF_INVALID_ARG);
 
-    char *__f = NULL;
-    IF_LESS(*left, n);
+    {
+        char *__f = NULL;
+        IF_LESS(*left, n);
+    }
     memcpy(*current, buf, n);
     *current = (char *)*current + n;
 
@@ -992,11 +1128,19 @@ int vpackn(void **current, int *left, void *buf, size_t n)
 
 int vunpackn(void **current, int *left, void *buf, size_t n)
 {
+    int ret;
+
     if (!current || !*current || !left || !buf)
         ERR_RET_PRINT(PACKF_NULL_POINTER);
+    if ((ret = __check_left(left)) < 0)
+        ERR_RET_PRINT(ret);
+    if (n > (size_t)INT_MAX)
+        ERR_RET_PRINT(PACKF_INVALID_ARG);
 
-    char *__f = NULL;
-    IF_LESS(*left, n);
+    {
+        char *__f = NULL;
+        IF_LESS(*left, n);
+    }
     memcpy(buf, *current, n);
     *current = (char *)*current + n;
 

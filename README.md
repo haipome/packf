@@ -98,6 +98,7 @@ extern int packf_print_error;
 | `PACKF_EXPECT_FORMAT` | -4 | Format string ended unexpectedly |
 | `PACKF_BE_CUT_OFF`    | -5 | Data would be truncated |
 | `PACKF_NULL_POINTER`  | -6 | NULL pointer argument |
+| `PACKF_INVALID_ARG`   | -7 | Invalid size/length (e.g. negative LV length, size > `INT_MAX`) |
 
 ### Helper macros
 
