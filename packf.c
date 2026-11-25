@@ -332,7 +332,7 @@ static int __struct_len_locale(char const *format)
     }                                                                   \
 } while (0)
 
-static int __packf(void **net, int *left_len, char const *format, \
+static int __packf(void **net, int *left_len, char const *format,
         int from, va_list va, void **locale, int depth, int order)
 {
     int buf_len = *left_len;
@@ -656,7 +656,7 @@ static int __packf(void **net, int *left_len, char const *format, \
     }                                                                   \
 } while (0)
 
-static int __unpackf(void **net, int *left_len, char const *format, \
+static int __unpackf(void **net, int *left_len, char const *format,
         int from, va_list va, void **locale, int depth, int order)
 {
     int buf_len = *left_len;
