@@ -55,7 +55,7 @@ packf(buf, sizeof(buf), "[d =10[d -64s 32S]]", &msg);
 - **Familiar API** — format-string driven, just like `sprintf`/`sscanf`.
 - **One description, two directions** — the same format string packs and unpacks.
 - **Comprehensive type support** — 8/16/32/64-bit integers, float, double, strings, padding, arrays, and nested structs.
-- **LV (Length–Value) fields** — built-in variable-length arrays, strings and structs with a 1-byte or 2-byte length prefix; no manual length bookkeeping.
+- **LV (Length–Value) fields** — built-in variable-length arrays, strings and structs with a 1-, 2- or 4-byte length prefix; no manual length bookkeeping.
 - **Automatic byte-swap** — multi-byte values are converted to/from the wire byte order (big-endian by default, `<` for little-endian). No manual `htons`/`ntohl` calls.
 - **Struct-aware** — packs/unpacks directly from `#pragma pack(1)` structs, so the struct definition mirrors the wire format.
 - **Incremental packing** — `vpackf`/`vunpackf` update the current position and remaining length, making multi-step message assembly easy.
@@ -69,12 +69,12 @@ packf(buf, sizeof(buf), "[d =10[d -64s 32S]]", &msg);
 A format string is a sequence of fields. Each field has up to three parts:
 
 ```
-[-=][num]type
+[-=#][num]type
 ```
 
 | Part | Meaning |
 |------|---------|
-| `-` or `=` | Optional. Puts a length prefix on the wire — **1 byte** for `-`, **2 bytes** for `=` — which makes the field variable-length (an *LV* field). |
+| `-`, `=` or `#` | Optional. Puts a length prefix on the wire — **1 byte** for `-`, **2 bytes** for `=`, **4 bytes** for `#` — which makes the field variable-length (an *LV* field). |
 | `num` | Optional. Without a prefix: the fixed count. With a prefix: the **maximum** count. |
 | `type` | One type character from the table below. |
 
@@ -97,7 +97,7 @@ Between fields you may put spaces (for readability) and the byte-order switches 
 
 ### Every form at a glance
 
-There are 16 forms in total. The tables use `-`; `=` works the same with a 2-byte prefix and a `uint16_t` count. "Pack" and "Unpack" are the arguments you pass for a field at the top level of the format.
+There are 16 forms in total. The tables use `-`; `=` works the same with a 2-byte prefix and a `uint16_t` count, and `#` with a 4-byte prefix and a `uint32_t` count. "Pack" and "Unpack" are the arguments you pass for a field at the top level of the format.
 
 **Numbers** — `c w d D f F`, shown with `d`:
 
@@ -141,7 +141,7 @@ When unpacking, padding is skipped without checking that it is zero.
 
 ### Fields inside a struct
 
-Inside `[...]` no arguments are passed; each field maps to a member of the struct instead. An LV field needs a length member right before its data, sized like the prefix (`uint8_t` for `-`, `uint16_t` for `=`), so the struct keeps the same shape as the protocol.
+Inside `[...]` no arguments are passed; each field maps to a member of the struct instead. An LV field needs a length member right before its data, sized like the prefix (`uint8_t` for `-`, `uint16_t` for `=`, `uint32_t` for `#`), so the struct keeps the same shape as the protocol.
 
 | Field | Declare in the struct | Length member |
 |-------|-----------------------|---------------|
@@ -166,9 +166,10 @@ Inside `[...]` no arguments are passed; each field maps to a member of the struc
 - **Whether you pass a count.** Yes for number arrays, struct arrays and LV padding; no for strings and `-[...]`, where it is computed.
 - **Length members exist only inside a struct.** At the top level, `-16s` takes a plain `char *` and `-[...]` takes a pointer to the struct body itself; what you pass must **not** start with a length member, or every field is shifted by it without any error. The length read from the wire is not returned there — use `strlen` for a string, or wrap the field in a struct (`[-[...]]`) to get it in a length member.
 - **Automatic length members are written only when unpacking.** For `-16s` and `-[...]` inside a struct, packing computes the length for the wire but leaves the member in your struct untouched; unpacking stores the length declared on the wire into it.
-- **Count type differs by direction.** Packing takes an `int`; unpacking takes a pointer sized like the prefix — `uint8_t *` for `-`, `uint16_t *` for `=`. Only that many bytes are written, so never pass an `int *`.
+- **Count type differs by direction.** Packing takes an `int`; unpacking takes a pointer sized like the prefix — `uint8_t *` for `-`, `uint16_t *` for `=`, `uint32_t *` for `#`. Only that many bytes are written, so never pass an `int *` for `-` or `=`.
 - **`num` on a string includes the `\0`.** `16s`, `16S` and `-16s` all hold at most 15 characters; a longer string fails with `PACKF_BE_CUT_OFF`. `num` on anything else is a plain element count.
-- **Exceeding a maximum is an error, not a truncation.** `-4d` with a count of 5, or a prefix value too large for 1 or 2 bytes, returns `PACKF_BE_CUT_OFF`.
+- **Exceeding a maximum is an error, not a truncation.** `-4d` with a count of 5, or a prefix value too large for the 1 or 2 bytes of `-` or `=`, returns `PACKF_BE_CUT_OFF`.
+- **`#` is limited by `int`, not by its 4 bytes.** Lengths are `int`s throughout, so `#` carries at most `INT_MAX`. A larger length read from the wire fails with `PACKF_OUT_OF_BUF`, and a larger length member in a struct with `PACKF_INVALID_ARG`.
 
 ### Byte order
 
@@ -185,12 +186,12 @@ packf(buf, sizeof(buf), "w <d >w", a, b, c);   // mixed in one message
 ```
 
 - A switch is a token of its own, placed between fields like a space.
-- It affects the values of `w d D f F` and the 2-byte length prefix of `=`. `c`, `s`, `S`, `a` and the 1-byte prefix of `-` have no byte order.
+- It affects the values of `w d D f F` and the 2-byte and 4-byte length prefixes of `=` and `#`. `c`, `s`, `S`, `a` and the 1-byte prefix of `-` have no byte order.
 - A struct inherits the byte order in effect at its `[`. A switch inside `[...]` ends at the matching `]`, so every element of a struct array has the same layout.
 
 ### `s` vs `S`
 
-`S` differs from `s` in exactly one case: **no prefix, with `num`**. Without `num`, or with a `-`/`=` prefix, they are identical.
+`S` differs from `s` in exactly one case: **no prefix, with `num`**. Without `num`, or with a `-`/`=`/`#` prefix, they are identical.
 
 | Format | Wire bytes | Bytes in the local struct | Use case |
 |--------|-----------|---------------------------|----------|
@@ -210,7 +211,7 @@ Compared with `-30s`, `30S` needs no length member in the struct and ends with `
 
 ### Forward compatibility with `-[...]`
 
-`-[...]` and `=[...]` write the byte length of the struct body in front of it. When unpacking, the reader parses the fields it knows and then jumps to the end of the declared length. So a newer sender can **append** fields to the struct and older readers keep working:
+`-[...]`, `=[...]` and `#[...]` write the byte length of the struct body in front of it. When unpacking, the reader parses the fields it knows and then jumps to the end of the declared length. So a newer sender can **append** fields to the struct and older readers keep working:
 
 ```c
 // New sender: struct has an extra trailing field
@@ -228,15 +229,22 @@ Limits:
 - It works one way only. A newer reader fails with `PACKF_OUT_OF_BUF` on older data, because the declared length is too short for its format; check a version field first and pick the format accordingly.
 - Fields can only be added at the end, never inserted, removed or retyped.
 - The form with `num` (`-3[...]`) is an element count and cannot skip anything. To make array elements extensible, give each its own length: `=10[ -[...] ]`.
-- The body is limited to 255 bytes with `-` and 65535 bytes with `=`.
+- The body is limited to 255 bytes with `-` and 65535 bytes with `=`; use `#` for anything larger.
+
+The same form frames a whole message behind a 4-byte length, with no manual bookkeeping:
+
+```c
+// wire: 4-byte body length, then the body
+int len = packf(buf, sizeof(buf), "#[w d 64S]", &msg);
+```
 
 ### Untrusted input
 
 `unpackf` checks every read against the source buffer, but it cannot know how large your destinations are. When the data comes from the network:
 
 - **Always give `num` for strings and LV arrays.** Without it the input alone decides how much is written, like `sscanf("%s")`:
-  - `s`, `S`, `-s`, `=s` — up to the rest of the buffer, or 65535 bytes plus `\0` for `=s`
-  - `-d`, `=d` and the other number types — up to 255 or 65535 elements
+  - `s`, `S`, `-s`, `=s`, `#s` — up to the rest of the buffer, or 65535 bytes plus `\0` for `=s`
+  - `-d`, `=d`, `#d` and the other number types — up to 255 or 65535 elements, or as many as the buffer holds for `#d`
 
   With `num` (`-32s`, `32s`, `32S`, `-64d`), anything larger fails with `PACKF_BE_CUT_OFF`. `-[...]` is safe without `num`: its body is bounded by the format.
 - **Size destinations for the maximum.** `-64d` needs room for 64 elements; `-32s` needs 32 bytes.
@@ -370,7 +378,7 @@ len = packf(buf, sizeof(buf), "-64d", 5, arr);
 // len == 1 + 5*4 == 21
 
 int32_t out[64];
-uint8_t count;                 // uint8_t for '-', uint16_t for '='
+uint8_t count;                 // uint8_t for '-', uint16_t for '=', uint32_t for '#'
 unpackf(buf, len, "-64d", &count, out);
 // count == 5, out[0..4] == {10,20,30,40,50}
 ```

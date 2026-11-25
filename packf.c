@@ -81,56 +81,86 @@ static inline void __copy_rev(void *dst, void const *src, size_t n)
     memcpy(dst, tmp, n);
 }
 
-/* Unaligned-safe load/store. Wire buffers (and #pragma pack(1) structs)
- * are not guaranteed to satisfy natural alignment for multi-byte types. */
-static inline void __store_u8(void *dst, uint8_t v)
+/* Size in bytes of the LV length prefix selected by c, or 0 if c is not
+ * an LV prefix character. */
+static inline int __lv_size(char c)
 {
-    memcpy(dst, &v, sizeof(v));
-}
-
-static inline uint8_t __load_u8(void const *src)
-{
-    uint8_t v;
-    memcpy(&v, src, sizeof(v));
-    return v;
-}
-
-static inline void __store_u16(void *dst, uint16_t v)
-{
-    memcpy(dst, &v, sizeof(v));
-}
-
-static inline uint16_t __load_u16(void const *src)
-{
-    uint16_t v;
-    memcpy(&v, src, sizeof(v));
-    return v;
-}
-
-/* 2-byte LV length prefix on the wire, in the given byte order. */
-static inline void __store_u16_wire(void *dst, uint16_t v, int order)
-{
-    unsigned char *p = dst;
-
-    if (order == ORDER_LE)
+    switch (c)
     {
-        p[0] = (unsigned char)(v & 0xFF);
-        p[1] = (unsigned char)(v >> 8);
+        case '-': return 1;
+        case '=': return 2;
+        case '#': return 4;
+    }
+    return 0;
+}
+
+/* Length member of an LV field in a local struct: size (1, 2 or 4) bytes
+ * in host byte order. Unaligned-safe, as #pragma pack(1) structs are not
+ * guaranteed to satisfy natural alignment for multi-byte types. */
+static inline void __store_len(void *dst, uint32_t v, int size)
+{
+    if (size == 1)
+    {
+        uint8_t v8 = (uint8_t)v;
+        memcpy(dst, &v8, sizeof(v8));
+    }
+    else if (size == 2)
+    {
+        uint16_t v16 = (uint16_t)v;
+        memcpy(dst, &v16, sizeof(v16));
+    }
+    else
+        memcpy(dst, &v, sizeof(v));
+}
+
+static inline uint32_t __load_len(void const *src, int size)
+{
+    if (size == 1)
+    {
+        uint8_t v8;
+        memcpy(&v8, src, sizeof(v8));
+        return v8;
+    }
+    else if (size == 2)
+    {
+        uint16_t v16;
+        memcpy(&v16, src, sizeof(v16));
+        return v16;
     }
     else
     {
-        p[0] = (unsigned char)(v >> 8);
-        p[1] = (unsigned char)(v & 0xFF);
+        uint32_t v32;
+        memcpy(&v32, src, sizeof(v32));
+        return v32;
     }
 }
 
-static inline uint16_t __load_u16_wire(void const *src, int order)
+/* LV length prefix on the wire: size (1, 2 or 4) bytes in the given byte
+ * order. */
+static inline void __store_len_wire(void *dst, uint32_t v, int size, int order)
+{
+    unsigned char *p = dst;
+    int i;
+
+    for (i = 0; i < size; ++i)
+    {
+        int shift = 8 * (order == ORDER_LE ? i : size - 1 - i);
+        p[i] = (unsigned char)((v >> shift) & 0xFF);
+    }
+}
+
+static inline uint32_t __load_len_wire(void const *src, int size, int order)
 {
     unsigned char const *p = src;
+    uint32_t v = 0;
+    int i;
 
-    if (order == ORDER_LE)
-        return (uint16_t)(p[0] | (p[1] << 8));
-    return (uint16_t)((p[0] << 8) | p[1]);
+    for (i = 0; i < size; ++i)
+    {
+        int shift = 8 * (order == ORDER_LE ? i : size - 1 - i);
+        v |= (uint32_t)p[i] << shift;
+    }
+    return v;
 }
 
 # define __ISDIGIT(c) ((c) >= '0' && (c) <= '9')
@@ -176,14 +206,10 @@ static int __struct_len_locale(char const *format)
             continue;
         }
 
-        if (*f == '-')
+        num = __lv_size(*f);
+        if (num)
         {
-            len += 1;
-            ++f;
-        }
-        else if (*f == '=')
-        {
-            len += 2;
+            len += num;
             ++f;
         }
 
@@ -243,15 +269,16 @@ static int __struct_len_locale(char const *format)
     return  len;
 }
 
-/* Largest length an LV prefix of lv_type bytes can encode. */
-# define LV_MAX(lv_type) ((lv_type) == 1 ? 0xFF : 0xFFFF)
+/* Largest length an LV prefix of lv_type bytes can carry. Lengths are
+ * ints throughout, so a 4-byte prefix is limited to INT_MAX. */
+# define LV_MAX(lv_type) \
+    ((lv_type) == 1 ? 0xFF : (lv_type) == 2 ? 0xFFFF : INT_MAX)
 
 /* Write the LV length prefix at des (space must already be reserved) and
  * advance des. Fails if lv_len does not fit in the prefix. */
 # define PUT_LV_LEN(des) do {                                           \
     if (lv_len > LV_MAX(lv_type)) return PACKF_BE_CUT_OFF;              \
-    if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
-    else __store_u16_wire(des, (uint16_t)lv_len, order);                \
+    __store_len_wire(des, (uint32_t)lv_len, lv_type, order);            \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
@@ -267,8 +294,9 @@ static int __struct_len_locale(char const *format)
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
         else                                                            \
         {                                                               \
-            if (lv_type == 1) lv_len = (int)__load_u8(src);             \
-            else lv_len = (int)__load_u16(src);                         \
+            uint32_t __len = __load_len(src, lv_type);                  \
+            if (__len > (uint32_t)INT_MAX) return PACKF_INVALID_ARG;    \
+            lv_len = (int)__len;                                        \
             (src) = (char *)(src) + lv_type;                            \
         }                                                               \
         if (lv_len < 0) return PACKF_INVALID_ARG;                       \
@@ -360,20 +388,9 @@ static int __packf(void **net, int *left_len, char const *format,
             continue;
         }
 
-        if (*f == '-')
-        {
-            lv_type = 1;
+        lv_type = (char)__lv_size(*f);
+        if (lv_type)
             ++f;
-        }
-        else if (*f == '=')
-        {
-            lv_type = 2;
-            ++f;
-        }
-        else
-        {
-            lv_type = 0;
-        }
 
         str_num = f;
         while (__ISDIGIT(*f))
@@ -583,15 +600,17 @@ static int __packf(void **net, int *left_len, char const *format,
     return buf_len - *left_len;
 }
 
-# define SET_LEN(des, len) do {                                         \
-    if (lv_type == 1) __store_u8(des, (uint8_t)(len));                  \
-    else __store_u16(des, (uint16_t)(len));                             \
-} while (0)
+# define SET_LEN(des, len) __store_len(des, (uint32_t)(len), lv_type)
 
+/* Read the LV length prefix at src and advance src. A 4-byte prefix can
+ * declare more than an int holds; no buffer is that large, so reject it
+ * before it could turn into a negative length. */
 # define GET_LV_LEN(src) do {                                           \
+    uint32_t __len;                                                     \
     IF_LESS(*left_len, lv_type);                                        \
-    if (lv_type == 1) lv_len = (int)__load_u8(src);                     \
-    else lv_len = (int)__load_u16_wire(src, order);                     \
+    __len = __load_len_wire(src, lv_type, order);                       \
+    if (__len > (uint32_t)INT_MAX) return PACKF_OUT_OF_BUF;             \
+    lv_len = (int)__len;                                                \
     (src) = (char *)(src) + lv_type;                                    \
 } while (0)
 
@@ -684,20 +703,9 @@ static int __unpackf(void **net, int *left_len, char const *format,
             continue;
         }
 
-        if (*f == '-')
-        {
-            lv_type = 1;
+        lv_type = (char)__lv_size(*f);
+        if (lv_type)
             ++f;
-        }
-        else if (*f == '=')
-        {
-            lv_type = 2;
-            ++f;
-        }
-        else
-        {
-            lv_type = 0;
-        }
 
         str_num = f;
         while (__ISDIGIT(*f))
