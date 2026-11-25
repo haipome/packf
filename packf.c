@@ -216,6 +216,7 @@ static int __struct_len_locale(char const *format)
             case 'a':
             case 'c':
             case 's':
+            case 'S':
                 u_len = 1;
                 break;
             case 'w':
@@ -257,14 +258,25 @@ static int __struct_len_locale(char const *format)
     return  len;
 }
 
-# define SET_LV_LEN(des) do {                                           \
-    IF_LESS(*left_len, lv_type);                                        \
+/* Largest length an LV prefix of lv_type bytes can encode. */
+# define LV_MAX(lv_type) ((lv_type) == 1 ? 0xFF : 0xFFFF)
+
+/* Write the LV length prefix at des (space must already be reserved) and
+ * advance des. Fails if lv_len does not fit in the prefix. */
+# define PUT_LV_LEN(des) do {                                           \
+    if (lv_len > LV_MAX(lv_type)) return PACKF_BE_CUT_OFF;              \
     if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
     else __store_u16_be(des, (uint16_t)lv_len);                         \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
-# define SET_LV(des, src) do {                                          \
+/* Reserve space for the LV length prefix, then write it. */
+# define SET_LV_LEN(des) do {                                           \
+    IF_LESS(*left_len, lv_type);                                        \
+    PUT_LV_LEN(des);                                                    \
+} while (0)
+
+# define SET_LV(des, src) do {                                       \
     if (lv_type)                                                        \
     {                                                                   \
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
@@ -326,7 +338,7 @@ static int __struct_len_locale(char const *format)
         }                                                               \
         if (from == FROM_PTR)                                           \
         {                                                               \
-            if (lv_type && num)                                         \
+            if (lv_type && num != -1)                                  \
                 *locale = (char *)*locale + num * sizeof(type1);        \
             else                                                        \
                 *locale = (char *)*locale + offset;                     \
@@ -385,13 +397,16 @@ static int __packf(void **net, int *left_len, char const *format, \
                     if (from == FROM_ARG)
                         *locale = va_arg(va, char *);
 
+                    /* Reserve the length prefix before packing the body,
+                     * so the body cannot be written past the buffer end. */
+                    IF_LESS(*left_len, lv_type);
                     p_struct_len = *net;
                     struct_start_net = *net = (char *)*net + lv_type;
                     if (from == FROM_PTR)
                         *locale = (char *)*locale + lv_type;
                     NEG_RET(__packf(net, left_len, f, FROM_PTR, NULL, locale));
                     lv_len = (char *)*net - (char *)struct_start_net;
-                    SET_LV_LEN(p_struct_len);
+                    PUT_LV_LEN(p_struct_len);
                 }
                 else
                 {
@@ -530,7 +545,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                 *net = (char *)*net + offset;
                 if (from == FROM_PTR)
                 {
-                    if (lv_type && num)
+                    if (lv_type && num != -1)
                         *locale = (char *)*locale + num;
                     else
                         *locale = (char *)*locale + offset;
@@ -637,7 +652,7 @@ static int __packf(void **net, int *left_len, char const *format, \
         }                                                               \
         if (from == FROM_PTR)                                           \
         {                                                               \
-            if (lv_type && num)                                         \
+            if (lv_type && num != -1)                                  \
                 *locale = (char *)*locale + num * sizeof(type);         \
             else                                                        \
                 *locale = (char *)*locale + offset;                     \
@@ -697,6 +712,9 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                         *locale = va_arg(va, char *);
 
                     GET_LV_LEN(*net);
+                    /* The declared struct length must fit in the input,
+                     * and is consumed from it as a whole. */
+                    IF_LESS(*left_len, lv_len);
                     struct_len_net = lv_len;
                     struct_start_net = *net;
                     if (from == FROM_PTR)
@@ -855,7 +873,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                 if (from == FROM_PTR)
                 {
                     memset(*locale, 0, offset);
-                    if (lv_type && num)
+                    if (lv_type && num != -1)
                         *locale = (char *)*locale + num;
                     else
                         *locale = (char *)*locale + offset;

@@ -182,6 +182,148 @@ static void test_vpack_cursor_on_failure(void)
     printf("vpack cursor on failure: ok\n");
 }
 
+/* unpack "-[...]": the declared struct length must be bounded by the input
+ * and consumed from it, so later fields cannot read past the buffer. */
+static void test_lv_struct_unpack_bounds(void)
+{
+    uint8_t ok_wire[5]  = {4, 0x00, 0x00, 0x00, 0x2A};
+    uint8_t big_wire[5] = {200, 0x00, 0x00, 0x00, 0x2A};
+    uint32_t body = 0, next = 0;
+    int r;
+
+    /* Return value must count the struct body, not just the prefix. */
+    r = unpackf(ok_wire, sizeof(ok_wire), "-[d]", &body);
+    assert(r == 5);
+    assert(body == 0x2A);
+
+    /* Nothing left after the struct: the trailing d must fail. */
+    r = unpackf(ok_wire, sizeof(ok_wire), "-[d] d", &body, &next);
+    assert(r == PACKF_OUT_OF_BUF);
+
+    /* Declared length larger than the input. */
+    r = unpackf(big_wire, sizeof(big_wire), "-[d]", &body);
+    assert(r == PACKF_OUT_OF_BUF);
+
+    printf("lv struct unpack bounds: ok\n");
+}
+
+/* pack "-[...]": the length prefix must be reserved before the body is
+ * written, so the body cannot overflow the destination. */
+static void test_lv_struct_pack_bounds(void)
+{
+    uint8_t buf[8];
+    uint32_t body = 0x11223344u;
+    int r;
+
+    memset(buf, 0xAA, sizeof(buf));
+    r = packf(buf, 4, "-[d]", &body);
+    assert(r == PACKF_OUT_OF_BUF);
+    assert(buf[4] == 0xAA);
+
+    r = packf(buf, 5, "-[d]", &body);
+    assert(r == 5);
+    assert(buf[0] == 4);
+
+    printf("lv struct pack bounds: ok\n");
+}
+
+/* An LV length that does not fit its 1/2-byte prefix must be rejected,
+ * not silently truncated. */
+static void test_lv_len_prefix_overflow(void)
+{
+    static uint8_t buf[1024];
+    static uint8_t bytes[300];
+    static char str[301];
+    int r;
+
+    memset(bytes, 1, sizeof(bytes));
+    memset(str, 'x', 300);
+    str[300] = '\0';
+
+    r = packf(buf, sizeof(buf), "-300c", 300, bytes);
+    assert(r == PACKF_BE_CUT_OFF);
+    r = packf(buf, sizeof(buf), "=300c", 300, bytes);
+    assert(r == 2 + 300);
+
+    r = packf(buf, sizeof(buf), "-s", str);
+    assert(r == PACKF_BE_CUT_OFF);
+    r = packf(buf, sizeof(buf), "=s", str);
+    assert(r == 2 + 300);
+
+    r = packf(buf, sizeof(buf), "-[300c]", bytes);
+    assert(r == PACKF_BE_CUT_OFF);
+    r = packf(buf, sizeof(buf), "=[300c]", bytes);
+    assert(r == 2 + 300);
+
+    printf("lv length prefix overflow: ok\n");
+}
+
+/* An empty LV struct array whose element contains S must still compute the
+ * element size, and skip the right number of local bytes. */
+static void test_empty_struct_array_with_S(void)
+{
+    uint8_t buf[64];
+
+# pragma pack(1)
+    struct elem
+    {
+        uint32_t    a;
+        char        s[8];
+    };
+    struct msg
+    {
+        uint16_t    n;
+        struct elem e[2];
+        uint8_t     tail;
+    } in, out;
+# pragma pack()
+
+    memset(&in, 0, sizeof(in));
+    in.n    = 0;
+    in.tail = 0x5A;
+
+    int len = packf(buf, sizeof(buf), "[=2[d 8S] c]", &in);
+    assert(len == 2 + 1);
+    assert(buf[2] == 0x5A);
+
+    memset(&out, 0, sizeof(out));
+    int r = unpackf(buf, (size_t)len, "[=2[d 8S] c]", &out);
+    assert(r == len);
+    assert(out.n == 0);
+    assert(out.tail == 0x5A);
+
+    printf("empty struct array with S: ok\n");
+}
+
+/* An LV array without a max inside a struct is variable-length locally:
+ * the local cursor must move forward past the values, not backwards. */
+static void test_lv_no_max_in_struct(void)
+{
+    uint8_t local[1 + 2 * 2 + 1];
+    uint8_t buf[16];
+    uint16_t v[2] = {0x0102, 0x0304};
+    int len;
+
+    local[0] = 2;
+    memcpy(local + 1, v, sizeof(v));
+    local[5] = 0x5A;
+
+    len = packf(buf, sizeof(buf), "[-w c]", local);
+    assert(len == 1 + 4 + 1);
+    assert(buf[0] == 2);
+    assert(buf[1] == 0x01 && buf[2] == 0x02);
+    assert(buf[3] == 0x03 && buf[4] == 0x04);
+    assert(buf[5] == 0x5A);
+
+    uint8_t back[sizeof(local)];
+    memset(back, 0, sizeof(back));
+    int r = unpackf(buf, (size_t)len, "[-w c]", back);
+    assert(r == len);
+    assert(memcmp(back, local, sizeof(local)) == 0);
+
+    printf("lv without max in struct: ok\n");
+}
+
 int main(void)
 {
     test_roundtrip();
@@ -191,6 +333,11 @@ int main(void)
     test_negative_lv();
     test_format_num_overflow();
     test_vpack_cursor_on_failure();
+    test_lv_struct_unpack_bounds();
+    test_lv_struct_pack_bounds();
+    test_lv_len_prefix_overflow();
+    test_empty_struct_array_with_S();
+    test_lv_no_max_in_struct();
 
     printf("all tests passed\n");
     return 0;
