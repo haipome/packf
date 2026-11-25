@@ -242,6 +242,8 @@ unpackf(buf, len, "-32s", out);
 // out == "hello"
 ```
 
+> **Warning:** when unpacking, a string without `num` (`s`, `-s`, `=s`) is copied with no limit on the destination size — the input data alone decides how many bytes are written (up to 65536 for `=s`), like `sscanf("%s")`. For untrusted input always give `num` (`-32s`, `32s`, `32S`), so an oversized string fails with `PACKF_BE_CUT_OFF`.
+
 ### 3. Arrays
 
 ```c
@@ -257,6 +259,8 @@ uint8_t count;
 unpackf(buf, len, "-64d", &count, out);
 // count == 5, out[0..4] == {10,20,30,40,50}
 ```
+
+> **Note:** when packing, the element count is passed as an `int`. When unpacking, it is a pointer matching the length prefix — `uint8_t *` for `-`, `uint16_t *` for `=`. Only that many bytes are written, so do not pass an `int *`.
 
 ### 4. Structs
 
