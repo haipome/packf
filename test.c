@@ -696,6 +696,55 @@ static void test_lv_4byte_prefix(void)
     printf("lv 4-byte prefix: ok\n");
 }
 
+/* ']' takes no LV prefix or count: it must be rejected, not silently
+ * treated as a plain ']'. */
+static void test_prefix_before_close_bracket(void)
+{
+    uint8_t local[64], buf[64];
+
+    memset(local, 0, sizeof(local));
+
+    assert(packf(buf, sizeof(buf), "[3a #]", local) == PACKF_NOT_FORMAT);
+    assert(packf(buf, sizeof(buf), "[c 5]", local) == PACKF_NOT_FORMAT);
+    assert(packf(buf, sizeof(buf), "[c -]", local) == PACKF_NOT_FORMAT);
+    assert(packf(buf, sizeof(buf), "[c =2]", local) == PACKF_NOT_FORMAT);
+    assert(unpackf(buf, sizeof(buf), "[3a #]", local) == PACKF_NOT_FORMAT);
+    assert(unpackf(buf, sizeof(buf), "[c 5]", local) == PACKF_NOT_FORMAT);
+
+    /* at the top level too */
+    assert(packf(buf, sizeof(buf), "c 5]", 1) == PACKF_NOT_FORMAT);
+
+    /* and in the body of an empty struct array, which is only measured */
+    assert(packf(buf, sizeof(buf), "[-1[c 2]]", local) == PACKF_NOT_FORMAT);
+
+    /* the plain forms still work */
+    assert(packf(buf, sizeof(buf), "[3a]", local) == 3);
+    assert(packf(buf, sizeof(buf), "[-1[c]]", local) == 1);
+
+    printf("prefix before ']': ok\n");
+}
+
+/* Measuring an empty struct array must not overflow an int when the format
+ * declares huge counts (UBSan would flag a signed overflow). */
+static void test_local_struct_len_overflow(void)
+{
+    uint8_t local[64], buf[64];
+
+    memset(local, 0, sizeof(local));   /* LV count 0 */
+
+    assert(packf(buf, sizeof(buf), "[-1[2147483647d]]", local)
+            == PACKF_INVALID_ARG);
+    assert(packf(buf, sizeof(buf), "[-1[1073741824c 1073741824c]]", local)
+            == PACKF_INVALID_ARG);
+    buf[0] = 0;                        /* wire count 0 */
+    assert(unpackf(buf, 1, "[-1[2147483647d]]", local) == PACKF_INVALID_ARG);
+
+    /* a large but representable size is fine */
+    assert(packf(buf, sizeof(buf), "[-1[1000c]]", local) == 1);
+
+    printf("local struct length overflow: ok\n");
+}
+
 int main(void)
 {
     test_roundtrip();
@@ -714,6 +763,8 @@ int main(void)
     test_lv_count_width();
     test_little_endian();
     test_lv_4byte_prefix();
+    test_prefix_before_close_bracket();
+    test_local_struct_len_overflow();
 
     printf("all tests passed\n");
     return 0;

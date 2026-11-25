@@ -25,7 +25,8 @@ extern "C"
  * serialization and deserialization functions similar to sprintf and sscanf.
  * By passing a format string that describes the data layout, various data
  * types (including structs and arrays) can be conveniently converted between
- * host byte order and network byte order for network transmission.
+ * host byte order and a big-endian (network byte order, the default) or
+ * little-endian wire format.
  *
  * format: [-=#][num]type    [] means optional
  *
@@ -33,6 +34,7 @@ extern "C"
  *  type   |    means
  * ---------------------------------------------------------------
  *    s    |    string ('\0' terminated)
+ *    S    |    string, not padded on the wire (see note 2.2)
  *    a    |    null byte ('\0')
  *    c    |    char   (int8_t  | uint8_t)
  *    w    |    word   (int16_t | uint16_t)
@@ -148,7 +150,8 @@ extern "C"
  *   PACKF_OUT_OF_BUF    (-1)  Destination or source buffer too small;
  *                             or a bare string field has no '\0' within
  *                             the remaining input.
- *   PACKF_NOT_FORMAT    (-2)  Unknown type character in the format string.
+ *   PACKF_NOT_FORMAT    (-2)  Unknown type character in the format string,
+ *                             or an LV prefix / count before ']'.
  *   PACKF_NOT_MATCH     (-3)  Unmatched '[' / ']' in the format string.
  *   PACKF_EXPECT_FORMAT (-4)  Format string ended where a type was expected.
  *   PACKF_BE_CUT_OFF    (-5)  Data would be truncated (e.g. LV length or
@@ -174,8 +177,9 @@ enum
 
 /*
  * Function: packf : pack format
- * Description: Packs the variadic arguments into network byte order binary
- *              data according to the layout described by format.
+ * Description: Packs the variadic arguments into binary data according to
+ *              the layout described by format (big endian unless switched
+ *              with <).
  * Parameters:
  *       dest:   destination buffer address
  *       max:    length of the buffer pointed to by dest
@@ -192,10 +196,11 @@ extern int packf(void *dest, size_t max, char const *format, ...);
 
 /*
  * Function: unpackf : unpack format
- * Description: Unpacks network byte order binary data into host byte order
- *              according to the layout described by format.
+ * Description: Unpacks binary data into host byte order according to the
+ *              layout described by format (big endian unless switched
+ *              with <).
  * Parameters:
- *      src:    start address of the network byte order binary data
+ *      src:    start address of the binary data
  *      max:    length of the binary data pointed to by src
  *      format: format string describing the binary data layout
  *      ...:    variadic arguments; each should be a pointer
@@ -231,18 +236,18 @@ extern int vpackf(void **current, int *left, char const *format, ...);
 
 /*
  * Function: vunpackf : variable unpack format
- * Description: Like unpackf, but accepts a pointer to the current network
- *              data position and a pointer to the remaining length, and
- *              updates them on success.
+ * Description: Like unpackf, but accepts a pointer to the current data
+ *              position and a pointer to the remaining length, and updates
+ *              them on success.
  * Parameters:
- *      current: pointer to the current position in the network data
- *      left:    pointer to the remaining length of the network data
- *      format:  format string describing the network data layout
+ *      current: pointer to the current position in the data
+ *      left:    pointer to the remaining length of the data
+ *      format:  format string describing the data layout
  *      ...:     variadic arguments; each should be a pointer
  * Return value:
  *      >= 0 : success, returns the total number of bytes unpacked
- *             *current: updated to the next address in the network data
- *             *left:    updated remaining network data length
+ *             *current: updated to the next address in the data
+ *             *left:    updated remaining data length
  *      < 0  : failure — *current and *left are left unchanged
  * Failure semantics:
  *      On failure the cursor is not advanced, but output arguments may
@@ -268,16 +273,16 @@ extern int vpackn(void **current, int *left, void const *buf, size_t n);
 
 /*
  * Function: vunpackn : variable unpack buffer of n length
- * Description: Unpacks a fixed-length buffer from the network data.
+ * Description: Unpacks a fixed-length buffer from the data.
  * Parameters:
- *      current: pointer to the current position in the network data
- *      left:    pointer to the remaining length of the network data
+ *      current: pointer to the current position in the data
+ *      left:    pointer to the remaining length of the data
  *      buf:     address of the destination buffer
  *      n:       length of the buffer
  * Return value:
  *      >= 0 : success, returns the total number of bytes unpacked
- *             *current: updated to the next address in the network data
- *             *left:    updated remaining network data length
+ *             *current: updated to the next address in the data
+ *             *left:    updated remaining data length
  *      < 0  : failure — *current and *left are left unchanged
  */
 extern int vunpackn(void **current, int *left, void *buf, size_t n);

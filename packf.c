@@ -192,9 +192,13 @@ static inline int parse_uint(char const *s, size_t n, int *out)
         return PACKF_INVALID_ARG;                                       \
 } while (0)
 
+/* Size of a struct body in local memory, computed from the format alone.
+ * Accumulated in size_t and bounded by INT_MAX, so that a large count in
+ * the format cannot overflow an int. */
 static int local_struct_len(char const *format)
 {
-    int len = 0, u_len, num, bracket_stack;
+    size_t len = 0;
+    int u_len, num, lv, has_num, bracket_stack;
     char const *f = format, *str_num;
     char type;
 
@@ -206,16 +210,14 @@ static int local_struct_len(char const *format)
             continue;
         }
 
-        num = lv_size(*f);
-        if (num)
-        {
-            len += num;
+        lv = lv_size(*f);
+        if (lv)
             ++f;
-        }
 
         str_num = f;
         while (IS_DIGIT(*f))
             ++f;
+        has_num = f != str_num;
         PARSE_NUM(str_num, f, num, 1);
 
         type = *(f++);
@@ -258,15 +260,21 @@ static int local_struct_len(char const *format)
 
                 break;
             case ']':
-                return len;
+                if (lv || has_num)
+                    return PACKF_NOT_FORMAT;
+                return (int)len;
             default:
                 return PACKF_NOT_FORMAT;
         }
 
-        len += num * u_len;
+        if (u_len && (size_t)num > (size_t)INT_MAX / (size_t)u_len)
+            return PACKF_INVALID_ARG;
+        len += (size_t)lv + (size_t)num * (size_t)u_len;
+        if (len > (size_t)INT_MAX)
+            return PACKF_INVALID_ARG;
     }
 
-    return  len;
+    return (int)len;
 }
 
 /* Largest length an LV prefix of lv_type bytes can carry. Lengths are
@@ -440,8 +448,8 @@ static int do_pack(void **net, int *left_len, char const *format,
                     {
                         if (array_size == 0)
                             NEG_RET(struct_len_locale = local_struct_len(f));
-                        *locale = (char *)*locale + struct_len_locale *
-                            (num - lv_len);
+                        *locale = (char *)*locale +
+                            (size_t)struct_len_locale * (size_t)(num - lv_len);
                     }
                 }
 
@@ -460,6 +468,9 @@ static int do_pack(void **net, int *left_len, char const *format,
 
                 break;
             case ']':
+                /* ']' takes no LV prefix or count. */
+                if (lv_type || num != -1)
+                    return PACKF_NOT_FORMAT;
                 /* A top-level ']' has no matching '['. */
                 if (depth == 0)
                     return PACKF_NOT_MATCH;
@@ -758,8 +769,8 @@ static int do_unpack(void **net, int *left_len, char const *format,
                     {
                         if (array_size == 0)
                             NEG_RET(struct_len_locale = local_struct_len(f));
-                        *locale = (char *)*locale + struct_len_locale *
-                            (num - lv_len);
+                        *locale = (char *)*locale +
+                            (size_t)struct_len_locale * (size_t)(num - lv_len);
                     }
                 }
 
@@ -778,6 +789,9 @@ static int do_unpack(void **net, int *left_len, char const *format,
 
                 break;
             case ']':
+                /* ']' takes no LV prefix or count. */
+                if (lv_type || num != -1)
+                    return PACKF_NOT_FORMAT;
                 /* A top-level ']' has no matching '['. */
                 if (depth == 0)
                     return PACKF_NOT_MATCH;
