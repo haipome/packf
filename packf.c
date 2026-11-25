@@ -26,16 +26,16 @@
 # define IF_LESS(x, n) do {                                             \
     size_t __need = (size_t)(n);                                        \
     if (__need > (size_t)INT_MAX || (x) < 0 || (size_t)(x) < __need)    \
-        return PACKF_OUT_OF_BUF;                                  \
+        return PACKF_OUT_OF_BUF;                                        \
     (x) -= (int)__need;                                                 \
 } while (0)
 
 # define CHECK_ARRAY_OFFSET(type1, array_size, offset_var) do {         \
     if ((array_size) < 0)                                               \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
     if ((array_size) > 0 &&                                             \
         (size_t)(array_size) > (size_t)INT_MAX / sizeof(type1))         \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
     (offset_var) = (int)(sizeof(type1) * (size_t)(array_size));         \
 } while (0)
 
@@ -159,7 +159,7 @@ static inline int __parse_uint(char const *s, size_t n, int *out)
         (num_var) = (empty_val);                                        \
     else if (__parse_uint((str_num),                                    \
                           (size_t)((end) - (str_num)), &(num_var)) < 0) \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
 } while (0)
 
 static int __struct_len_locale(char const *format)
@@ -251,7 +251,7 @@ static int __struct_len_locale(char const *format)
 # define PUT_LV_LEN(des) do {                                           \
     if (lv_len > LV_MAX(lv_type)) return PACKF_BE_CUT_OFF;              \
     if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
-    else __store_u16_wire(des, (uint16_t)lv_len, order);                        \
+    else __store_u16_wire(des, (uint16_t)lv_len, order);                \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
@@ -261,7 +261,7 @@ static int __struct_len_locale(char const *format)
     PUT_LV_LEN(des);                                                    \
 } while (0)
 
-# define SET_LV(des, src) do {                                       \
+# define SET_LV(des, src) do {                                          \
     if (lv_type)                                                        \
     {                                                                   \
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
@@ -271,8 +271,8 @@ static int __struct_len_locale(char const *format)
             else lv_len = (int)__load_u16(src);                         \
             (src) = (char *)(src) + lv_type;                            \
         }                                                               \
-        if (lv_len < 0) return PACKF_INVALID_ARG;                 \
-        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
+        if (lv_len < 0) return PACKF_INVALID_ARG;                       \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;         \
         SET_LV_LEN(des);                                                \
     }                                                                   \
 } while (0)
@@ -591,7 +591,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 # define GET_LV_LEN(src) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
     if (lv_type == 1) lv_len = (int)__load_u8(src);                     \
-    else lv_len = (int)__load_u16_wire(src, order);                         \
+    else lv_len = (int)__load_u16_wire(src, order);                     \
     (src) = (char *)(src) + lv_type;                                    \
 } while (0)
 
@@ -599,7 +599,7 @@ static int __packf(void **net, int *left_len, char const *format, \
     if (lv_type)                                                        \
     {                                                                   \
         GET_LV_LEN(src);                                                \
-        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;         \
         if (from == FROM_ARG) SET_LEN(va_arg(va, char *), lv_len);      \
         else { SET_LEN(des, lv_len); (des) = (char *)des + lv_type; }   \
     }                                                                   \
