@@ -26,16 +26,16 @@
 # define IF_LESS(x, n) do {                                             \
     size_t __need = (size_t)(n);                                        \
     if (__need > (size_t)INT_MAX || (x) < 0 || (size_t)(x) < __need)    \
-        return PACKF_OUT_OF_BUF;                                  \
+        return PACKF_OUT_OF_BUF;                                        \
     (x) -= (int)__need;                                                 \
 } while (0)
 
 # define CHECK_ARRAY_OFFSET(type1, array_size, offset_var) do {         \
     if ((array_size) < 0)                                               \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
     if ((array_size) > 0 &&                                             \
         (size_t)(array_size) > (size_t)INT_MAX / sizeof(type1))         \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
     (offset_var) = (int)(sizeof(type1) * (size_t)(array_size));         \
 } while (0)
 
@@ -45,33 +45,16 @@
 } while (0)
 
 # include <endian.h>
-# include <byteswap.h>
 
-# undef htobe16
-# undef htobe32
-# undef htobe64
-# undef htobef
-# undef htobed
-# undef be16toh
-# undef be32toh
-# undef be64toh
-# undef beftoh
-# undef bedtoh
+/* Byte order of the data on the wire. Big endian (network byte order) is
+ * the default; '<' and '>' in the format string switch it. */
+# define ORDER_BE 0
+# define ORDER_LE 1
 
 # if __BYTE_ORDER == __LITTLE_ENDIAN
-#  define htobe16(x) bswap_16(x)
-#  define htobe32(x) bswap_32(x)
-#  define htobe64(x) bswap_64(x)
-#  define be16toh(x) bswap_16(x)
-#  define be32toh(x) bswap_32(x)
-#  define be64toh(x) bswap_64(x)
+#  define HOST_ORDER ORDER_LE
 # else
-#  define htobe16(x) (x)
-#  define htobe32(x) (x)
-#  define htobe64(x) (x)
-#  define be16toh(x) (x)
-#  define be32toh(x) (x)
-#  define be64toh(x) (x)
+#  define HOST_ORDER ORDER_BE
 # endif
 
 # ifndef __FLOAT_WORD_ORDER
@@ -79,35 +62,24 @@
 # endif
 
 # if __FLOAT_WORD_ORDER == __LITTLE_ENDIAN
-
-static float __bswap_f(float x)
-{
-    union { float f; uint32_t i; } u_float = { x };
-    u_float.i = bswap_32(u_float.i);
-
-    return u_float.f;
-}
-
-static double __bswap_d(double x)
-{
-    union { double d; uint64_t i; } u_double = { x };
-    u_double.i = bswap_64(u_double.i);
-
-    return u_double.d;
-}
-
-#  define htobef(x) __bswap_f(x)
-#  define htobed(x) __bswap_d(x)
-#  define beftoh(x) __bswap_f(x)
-#  define bedtoh(x) __bswap_d(x)
+#  define HOST_FLOAT_ORDER ORDER_LE
 # else
-#  define htobef(x) (x)
-#  define htobed(x) (x)
-#  define beftoh(x) (x)
-#  define bedtoh(x) (x)
+#  define HOST_FLOAT_ORDER ORDER_BE
 # endif
 
-# define NO_SWAP(x) (x)
+/* Copy n (<= 8) bytes with the byte order reversed. Works on raw bytes, so
+ * a swapped float/double never exists as a floating-point value, and dst
+ * may be unaligned or equal to src. */
+static inline void __copy_rev(void *dst, void const *src, size_t n)
+{
+    unsigned char tmp[8];
+    unsigned char const *s = src;
+    size_t i;
+
+    for (i = 0; i < n; ++i)
+        tmp[i] = s[n - 1 - i];
+    memcpy(dst, tmp, n);
+}
 
 /* Unaligned-safe load/store. Wire buffers (and #pragma pack(1) structs)
  * are not guaranteed to satisfy natural alignment for multi-byte types. */
@@ -135,17 +107,30 @@ static inline uint16_t __load_u16(void const *src)
     return v;
 }
 
-static inline void __store_u16_be(void *dst, uint16_t v)
+/* 2-byte LV length prefix on the wire, in the given byte order. */
+static inline void __store_u16_wire(void *dst, uint16_t v, int order)
 {
-    uint16_t be = htobe16(v);
-    memcpy(dst, &be, sizeof(be));
+    unsigned char *p = dst;
+
+    if (order == ORDER_LE)
+    {
+        p[0] = (unsigned char)(v & 0xFF);
+        p[1] = (unsigned char)(v >> 8);
+    }
+    else
+    {
+        p[0] = (unsigned char)(v >> 8);
+        p[1] = (unsigned char)(v & 0xFF);
+    }
 }
 
-static inline uint16_t __load_u16_be(void const *src)
+static inline uint16_t __load_u16_wire(void const *src, int order)
 {
-    uint16_t be;
-    memcpy(&be, src, sizeof(be));
-    return be16toh(be);
+    unsigned char const *p = src;
+
+    if (order == ORDER_LE)
+        return (uint16_t)(p[0] | (p[1] << 8));
+    return (uint16_t)((p[0] << 8) | p[1]);
 }
 
 # define __ISDIGIT(c) ((c) >= '0' && (c) <= '9')
@@ -174,7 +159,7 @@ static inline int __parse_uint(char const *s, size_t n, int *out)
         (num_var) = (empty_val);                                        \
     else if (__parse_uint((str_num),                                    \
                           (size_t)((end) - (str_num)), &(num_var)) < 0) \
-        return PACKF_INVALID_ARG;                                 \
+        return PACKF_INVALID_ARG;                                       \
 } while (0)
 
 static int __struct_len_locale(char const *format)
@@ -185,7 +170,7 @@ static int __struct_len_locale(char const *format)
 
     while (*f)
     {
-        if (*f == ' ')
+        if (*f == ' ' || *f == '<' || *f == '>')
         {
             ++f;
             continue;
@@ -266,7 +251,7 @@ static int __struct_len_locale(char const *format)
 # define PUT_LV_LEN(des) do {                                           \
     if (lv_len > LV_MAX(lv_type)) return PACKF_BE_CUT_OFF;              \
     if (lv_type == 1) __store_u8(des, (uint8_t)lv_len);                 \
-    else __store_u16_be(des, (uint16_t)lv_len);                         \
+    else __store_u16_wire(des, (uint16_t)lv_len, order);                \
     (des) = (char *)(des) + lv_type;                                    \
 } while (0)
 
@@ -276,7 +261,7 @@ static int __struct_len_locale(char const *format)
     PUT_LV_LEN(des);                                                    \
 } while (0)
 
-# define SET_LV(des, src) do {                                       \
+# define SET_LV(des, src) do {                                          \
     if (lv_type)                                                        \
     {                                                                   \
         if (from == FROM_ARG) lv_len = va_arg(va, int);                 \
@@ -286,27 +271,33 @@ static int __struct_len_locale(char const *format)
             else lv_len = (int)__load_u16(src);                         \
             (src) = (char *)(src) + lv_type;                            \
         }                                                               \
-        if (lv_len < 0) return PACKF_INVALID_ARG;                 \
-        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
+        if (lv_len < 0) return PACKF_INVALID_ARG;                       \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;         \
         SET_LV_LEN(des);                                                \
     }                                                                   \
 } while (0)
 
-# define DO_PACKF(type1, type2, swap, swap_flag) do {                   \
+# define DO_PACKF(type1, type2, host_order) do {                        \
     type1 __tmp;                                                        \
+    int __swap = (sizeof(type1) > 1 && order != (host_order));          \
     SET_LV(*net, *locale);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type1));                              \
         if (from == FROM_ARG)                                           \
-            __tmp = swap((type1)(va_arg(va, type2)));                   \
+        {                                                               \
+            __tmp = (type1)(va_arg(va, type2));                         \
+            src = (char *)&__tmp;                                       \
+        }                                                               \
         else                                                            \
         {                                                               \
-            memcpy(&__tmp, *locale, sizeof(type1));                     \
-            __tmp = swap(__tmp);                                        \
+            src = *locale;                                              \
             *locale = (char *)*locale + sizeof(type1);                  \
         }                                                               \
-        memcpy(*net, &__tmp, sizeof(type1));                            \
+        if (__swap)                                                     \
+            __copy_rev(*net, src, sizeof(type1));                       \
+        else                                                            \
+            memcpy(*net, src, sizeof(type1));                           \
         *net = (char *)*net + sizeof(type1);                            \
     }                                                                   \
     else                                                                \
@@ -321,16 +312,11 @@ static int __struct_len_locale(char const *format)
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
-            if (swap_flag)                                              \
+            if (__swap)                                                 \
             {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                {                                                       \
-                    memcpy(&__tmp, src + i * sizeof(type1),             \
-                           sizeof(type1));                              \
-                    __tmp = swap(__tmp);                                \
-                    memcpy(des + i * sizeof(type1), &__tmp,             \
-                           sizeof(type1));                              \
-                }                                                       \
+                    __copy_rev(des + i * sizeof(type1),                 \
+                               src + i * sizeof(type1), sizeof(type1)); \
             }                                                           \
             else                                                        \
                 memcpy(des, src, (size_t)offset);                       \
@@ -338,7 +324,7 @@ static int __struct_len_locale(char const *format)
         }                                                               \
         if (from == FROM_PTR)                                           \
         {                                                               \
-            if (lv_type && num != -1)                                  \
+            if (lv_type && num != -1)                                   \
                 *locale = (char *)*locale + num * sizeof(type1);        \
             else                                                        \
                 *locale = (char *)*locale + offset;                     \
@@ -347,7 +333,7 @@ static int __struct_len_locale(char const *format)
 } while (0)
 
 static int __packf(void **net, int *left_len, char const *format, \
-        int from, va_list va, void **locale, int depth)
+        int from, va_list va, void **locale, int depth, int order)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
@@ -361,6 +347,15 @@ static int __packf(void **net, int *left_len, char const *format, \
     {
         if (*f == ' ')
         {
+            ++f;
+            continue;
+        }
+
+        /* Byte order switch: applies to the following fields, and to
+         * nested structs, but does not leak out of the enclosing []. */
+        if (*f == '<' || *f == '>')
+        {
+            order = (*f == '<') ? ORDER_LE : ORDER_BE;
             ++f;
             continue;
         }
@@ -405,7 +400,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     if (from == FROM_PTR)
                         *locale = (char *)*locale + lv_type;
                     NEG_RET(__packf(net, left_len, f, FROM_PTR,
-                                NULL, locale, depth + 1));
+                                NULL, locale, depth + 1, order));
                     lv_len = (char *)*net - (char *)struct_start_net;
                     PUT_LV_LEN(p_struct_len);
                 }
@@ -420,7 +415,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__packf(net, left_len, f, FROM_PTR,
-                                    NULL, locale, depth + 1));
+                                    NULL, locale, depth + 1, order));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
@@ -557,27 +552,27 @@ static int __packf(void **net, int *left_len, char const *format, \
 
                 break;
             case 'c':
-                DO_PACKF(int8_t, int, NO_SWAP, 0);
+                DO_PACKF(int8_t, int, HOST_ORDER);
 
                 break;
             case 'w':
-                DO_PACKF(int16_t, int, htobe16, 1);
+                DO_PACKF(int16_t, int, HOST_ORDER);
 
                 break;
             case 'd':
-                DO_PACKF(int32_t, int, htobe32, 1);
+                DO_PACKF(int32_t, int, HOST_ORDER);
 
                 break;
             case 'D':
-                DO_PACKF(int64_t, int64_t, htobe64, 1);
+                DO_PACKF(int64_t, int64_t, HOST_ORDER);
 
                 break;
             case 'f':
-                DO_PACKF(float, double, htobef, 1);
+                DO_PACKF(float, double, HOST_FLOAT_ORDER);
 
                 break;
             case 'F':
-                DO_PACKF(double, double, htobed, 1);
+                DO_PACKF(double, double, HOST_FLOAT_ORDER);
 
                 break;
             default:
@@ -596,7 +591,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 # define GET_LV_LEN(src) do {                                           \
     IF_LESS(*left_len, lv_type);                                        \
     if (lv_type == 1) lv_len = (int)__load_u8(src);                     \
-    else lv_len = (int)__load_u16_be(src);                              \
+    else lv_len = (int)__load_u16_wire(src, order);                     \
     (src) = (char *)(src) + lv_type;                                    \
 } while (0)
 
@@ -604,27 +599,29 @@ static int __packf(void **net, int *left_len, char const *format, \
     if (lv_type)                                                        \
     {                                                                   \
         GET_LV_LEN(src);                                                \
-        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;   \
+        if (num != -1 && lv_len > num) return PACKF_BE_CUT_OFF;         \
         if (from == FROM_ARG) SET_LEN(va_arg(va, char *), lv_len);      \
         else { SET_LEN(des, lv_len); (des) = (char *)des + lv_type; }   \
     }                                                                   \
 } while (0)
 
-# define DO_UNPACKF(type, swap, swap_flag) do {                         \
-    type __tmp;                                                         \
+# define DO_UNPACKF(type, host_order) do {                              \
+    int __swap = (sizeof(type) > 1 && order != (host_order));           \
     GET_LV(*locale, *net);                                              \
     if (num == -1 && !lv_type)                                          \
     {                                                                   \
         IF_LESS(*left_len, sizeof(type));                               \
-        memcpy(&__tmp, *net, sizeof(type));                             \
-        __tmp = swap(__tmp);                                            \
         if (from == FROM_ARG)                                           \
-            memcpy(va_arg(va, char *), &__tmp, sizeof(type));           \
+            des = va_arg(va, char *);                                   \
         else                                                            \
         {                                                               \
-            memcpy(*locale, &__tmp, sizeof(type));                      \
+            des = *locale;                                              \
             *locale = (char *)*locale + sizeof(type);                   \
         }                                                               \
+        if (__swap)                                                     \
+            __copy_rev(des, *net, sizeof(type));                        \
+        else                                                            \
+            memcpy(des, *net, sizeof(type));                            \
         *net = (char *)*net + sizeof(type);                             \
     }                                                                   \
     else                                                                \
@@ -639,16 +636,11 @@ static int __packf(void **net, int *left_len, char const *format, \
         if (offset)                                                     \
         {                                                               \
             IF_LESS(*left_len, offset);                                 \
-            if (swap_flag)                                              \
+            if (__swap)                                                 \
             {                                                           \
                 for (i = 0; i < array_size; i++)                        \
-                {                                                       \
-                    memcpy(&__tmp, src + i * sizeof(type),              \
-                           sizeof(type));                               \
-                    __tmp = swap(__tmp);                                \
-                    memcpy(des + i * sizeof(type), &__tmp,              \
-                           sizeof(type));                               \
-                }                                                       \
+                    __copy_rev(des + i * sizeof(type),                  \
+                               src + i * sizeof(type), sizeof(type));   \
             }                                                           \
             else                                                        \
                 memcpy(des, src, (size_t)offset);                       \
@@ -656,7 +648,7 @@ static int __packf(void **net, int *left_len, char const *format, \
         }                                                               \
         if (from == FROM_PTR)                                           \
         {                                                               \
-            if (lv_type && num != -1)                                  \
+            if (lv_type && num != -1)                                   \
                 *locale = (char *)*locale + num * sizeof(type);         \
             else                                                        \
                 *locale = (char *)*locale + offset;                     \
@@ -665,7 +657,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 } while (0)
 
 static int __unpackf(void **net, int *left_len, char const *format, \
-        int from, va_list va, void **locale, int depth)
+        int from, va_list va, void **locale, int depth, int order)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
@@ -679,6 +671,15 @@ static int __unpackf(void **net, int *left_len, char const *format, \
     {
         if (*f == ' ')
         {
+            ++f;
+            continue;
+        }
+
+        /* Byte order switch: applies to the following fields, and to
+         * nested structs, but does not leak out of the enclosing []. */
+        if (*f == '<' || *f == '>')
+        {
+            order = (*f == '<') ? ORDER_LE : ORDER_BE;
             ++f;
             continue;
         }
@@ -727,7 +728,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                         *locale = (char *)*locale + lv_type;
                     }
                     NEG_RET(__unpackf(net, &struct_len_net, f, FROM_PTR,
-                                NULL, locale, depth + 1));
+                                NULL, locale, depth + 1, order));
                     *net = (char *)struct_start_net + lv_len;
                 }
                 else
@@ -741,7 +742,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__unpackf(net, left_len, f, FROM_PTR,
-                                    NULL, locale, depth + 1));
+                                    NULL, locale, depth + 1, order));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
@@ -888,27 +889,27 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 
                 break;
             case 'c':
-                DO_UNPACKF(int8_t, NO_SWAP, 0);
+                DO_UNPACKF(int8_t, HOST_ORDER);
 
                 break;
             case 'w':
-                DO_UNPACKF(int16_t, be16toh, 1);
+                DO_UNPACKF(int16_t, HOST_ORDER);
 
                 break;
             case 'd':
-                DO_UNPACKF(int32_t, be32toh, 1);
+                DO_UNPACKF(int32_t, HOST_ORDER);
 
                 break;
             case 'D':
-                DO_UNPACKF(int64_t, be64toh, 1);
+                DO_UNPACKF(int64_t, HOST_ORDER);
 
                 break;
             case 'f':
-                DO_UNPACKF(float, beftoh, 1);
+                DO_UNPACKF(float, HOST_FLOAT_ORDER);
 
                 break;
             case 'F':
-                DO_UNPACKF(double, bedtoh, 1);
+                DO_UNPACKF(double, HOST_FLOAT_ORDER);
 
                 break;
             default:
@@ -949,7 +950,7 @@ int packf(void *dest, size_t max, char const *format, ...)
     left_len = (int)max;
 
     va_start(va, format);
-    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
+    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0, ORDER_BE);
     va_end(va);
 
     return ret;
@@ -971,7 +972,7 @@ int unpackf(void *src, size_t max, char const *format, ...)
     left_len = (int)max;
 
     va_start(va, format);
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0, ORDER_BE);
     va_end(va);
 
     return ret;
@@ -994,7 +995,7 @@ int vpackf(void **current, int *left, char const *format, ...)
     left_len = *left;
 
     va_start(va, format);
-    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
+    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0, ORDER_BE);
     va_end(va);
 
     if (ret > 0)
@@ -1023,7 +1024,7 @@ int vunpackf(void **current, int *left, char const *format, ...)
     left_len = *left;
 
     va_start(va, format);
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0, ORDER_BE);
     va_end(va);
 
     if (ret > 0)
@@ -1049,7 +1050,7 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
 
     net = *current;
     left_len = *left;
-    ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale, 0);
+    ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale, 0, ORDER_BE);
 
     if (ret > 0)
     {
@@ -1074,7 +1075,7 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
 
     net = *current;
     left_len = *left;
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale, 0);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale, 0, ORDER_BE);
 
     if (ret > 0)
     {

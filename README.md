@@ -19,7 +19,7 @@ A lightweight binary serialization library for C/C++ that converts data structur
 
 ## Overview
 
-packf provides `packf`/`unpackf` and their variants to serialize and deserialize C data — scalars, arrays, strings, and packed structs — into a portable big-endian binary wire format. The interface mirrors the familiarity of `sprintf`/`sscanf`: a single format string drives the entire operation.
+packf provides `packf`/`unpackf` and their variants to serialize and deserialize C data — scalars, arrays, strings, and packed structs — into a portable binary wire format (big-endian by default, little-endian on request). The interface mirrors the familiarity of `sprintf`/`sscanf`: a single format string drives the entire operation.
 
 ```c
 char buf[256];
@@ -40,7 +40,7 @@ unpackf(buf, len, "wd", &a, &b);
 - **Familiar API** — format-string driven, just like `sprintf`/`sscanf`.
 - **Comprehensive type support** — 8/16/32/64-bit integers, float, double, strings, byte arrays, and nested structs.
 - **LV (Length–Value) fields** — built-in support for variable-length arrays and strings with a 1-byte or 2-byte length prefix, eliminating manual length bookkeeping.
-- **Automatic byte-swap** — all multi-byte types are converted to/from big-endian automatically. No manual `htons`/`ntohl` calls.
+- **Automatic byte-swap** — all multi-byte types are converted to/from the wire byte order automatically (big-endian by default, `<` for little-endian). No manual `htons`/`ntohl` calls.
 - **Struct-aware** — can pack/unpack directly from `#pragma pack(1)` structs, keeping your code in sync with the wire format.
 - **Incremental packing** — `vpackf`/`vunpackf` variants update the current position and remaining length automatically, making multi-step message assembly easy.
 - **Public domain** — use freely in any project, commercial or otherwise.
@@ -124,6 +124,24 @@ format token: [-=][num]type
 | `type` | One of the type characters below |
 
 Spaces in the format string are ignored and can be used for readability.
+
+### Byte order
+
+The wire format is big-endian (network byte order) by default. Two switches change it:
+
+| Switch | Meaning |
+|--------|---------|
+| `<`    | following fields are **little-endian** on the wire |
+| `>`    | following fields are **big-endian** on the wire (default) |
+
+```c
+packf(buf, sizeof(buf), "<wd", a, b);          // all little-endian
+packf(buf, sizeof(buf), "w <d >w", a, b, c);   // mixed in one message
+```
+
+- A switch is a token of its own, placed between fields like a space — not between `-`/`=`, `num` and `type` (`"-<d"` is `PACKF_NOT_FORMAT`).
+- It affects the values of `w d D f F` and the 2-byte length prefix of `=`. `c`, `s`, `a` and the 1-byte prefix of `-` have no byte order; length fields in a local struct stay in host order.
+- A struct inherits the byte order in effect at its `[`. A switch inside `[...]` ends at the matching `]`, so every element of a struct array has the same layout.
 
 ### Type characters
 
@@ -373,4 +391,4 @@ gcc -o test test.c packf.c
 ./test
 ```
 
-> **Note:** packf uses `<endian.h>` and `<byteswap.h>`, which are available on Linux. On other platforms you may need to provide equivalent byte-swap primitives.
+> **Note:** packf uses `<endian.h>` to detect the host byte order, which is available on Linux. On other platforms you may need to provide an equivalent header.
