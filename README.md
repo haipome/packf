@@ -489,4 +489,4 @@ gcc -o test test.c packf.c
 ./test
 ```
 
-> **Note:** packf uses `<endian.h>` to detect the host byte order, which is available on Linux. On other platforms you may need to provide an equivalent header.
+packf needs only the standard C headers (plus POSIX `strnlen`); the host byte order is detected by the code itself, so no platform header such as `<endian.h>` is required.

@@ -44,28 +44,37 @@
     if (__ret < 0) return __ret;                                        \
 } while (0)
 
-# include <endian.h>
-
 /* Byte order of the data on the wire. Big endian (network byte order) is
  * the default; '<' and '>' in the format string switch it. */
 # define ORDER_BE 0
 # define ORDER_LE 1
 
-# if __BYTE_ORDER == __LITTLE_ENDIAN
-#  define HOST_ORDER ORDER_LE
-# else
-#  define HOST_ORDER ORDER_BE
-# endif
+/* Host byte order, found by looking at how the host stores a known value.
+ * This needs no platform header such as <endian.h>, and compilers fold the
+ * test to a constant. */
+static inline int __host_order(void)
+{
+    const uint16_t probe = 1;
+    unsigned char first;
 
-# ifndef __FLOAT_WORD_ORDER
-# define __FLOAT_WORD_ORDER __BYTE_ORDER
-# endif
+    memcpy(&first, &probe, 1);
+    return first ? ORDER_LE : ORDER_BE;
+}
 
-# if __FLOAT_WORD_ORDER == __LITTLE_ENDIAN
-#  define HOST_FLOAT_ORDER ORDER_LE
-# else
-#  define HOST_FLOAT_ORDER ORDER_BE
-# endif
+/* Byte order of floating-point values, which a few platforms store
+ * differently from integers. 1.0f is 0x3F800000: its first byte in memory
+ * is 0x3F on a big-endian host and 0x00 on a little-endian one. */
+static inline int __host_float_order(void)
+{
+    const float probe = 1.0f;
+    unsigned char first;
+
+    memcpy(&first, &probe, 1);
+    return first ? ORDER_BE : ORDER_LE;
+}
+
+# define HOST_ORDER       __host_order()
+# define HOST_FLOAT_ORDER __host_float_order()
 
 /* Copy n (<= 8) bytes with the byte order reversed. Works on raw bytes, so
  * a swapped float/double never exists as a floating-point value, and dst
