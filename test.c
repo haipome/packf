@@ -544,6 +544,158 @@ static void test_little_endian(void)
     printf("little endian: ok\n");
 }
 
+/* '#' is an LV field with a 4-byte length prefix: it carries what does
+ * not fit in the 2 bytes of '=', follows the byte order switches, and its
+ * count / length member is a uint32_t. */
+static void test_lv_4byte_prefix(void)
+{
+    enum { BIG = 70000 };
+    static uint8_t buf[BIG + 64];
+    static uint8_t bytes[BIG], bytes_out[BIG];
+    static char str[BIG + 1], str_out[BIG + 1];
+    int32_t arr[3] = {1, 2, 3}, out[4];
+    uint32_t c32[2] = {0, 0xEEEEEEEE};
+    int len, r, i;
+
+    for (i = 0; i < BIG; ++i)
+        bytes[i] = (uint8_t)(i * 7);
+    memset(str, 'x', BIG);
+    str[BIG] = '\0';
+
+    /* count array: wire layout and count width */
+    len = packf(buf, sizeof(buf), "#4d", 3, arr);
+    assert(len == 4 + 12);
+    assert(buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 3);
+    assert(buf[4] == 0 && buf[7] == 1);
+    r = unpackf(buf, (size_t)len, "#4d", &c32[0], out);
+    assert(r == len && c32[0] == 3 && c32[1] == 0xEEEEEEEE);
+    assert(out[0] == 1 && out[1] == 2 && out[2] == 3);
+
+    /* the prefix follows the byte order switch */
+    len = packf(buf, sizeof(buf), "<#4d", 3, arr);
+    assert(len == 4 + 12);
+    assert(buf[0] == 3 && buf[1] == 0 && buf[2] == 0 && buf[3] == 0);
+    assert(buf[4] == 1 && buf[7] == 0);
+    r = unpackf(buf, (size_t)len, "<#4d", &c32[0], out);
+    assert(r == len && c32[0] == 3 && out[2] == 3);
+
+    /* over the max is still an error */
+    assert(packf(buf, sizeof(buf), "#2d", 3, arr) == PACKF_BE_CUT_OFF);
+
+    /* more than '=' can carry: bytes, string, struct body */
+    assert(packf(buf, sizeof(buf), "=c", BIG, bytes) == PACKF_BE_CUT_OFF);
+    len = packf(buf, sizeof(buf), "#c", BIG, bytes);
+    assert(len == 4 + BIG);
+    assert(buf[0] == 0x00 && buf[1] == 0x01 && buf[2] == 0x11 && buf[3] == 0x70);
+    r = unpackf(buf, (size_t)len, "#c", &c32[0], bytes_out);
+    assert(r == len && c32[0] == BIG);
+    assert(memcmp(bytes, bytes_out, BIG) == 0);
+
+    assert(packf(buf, sizeof(buf), "=s", str) == PACKF_BE_CUT_OFF);
+    len = packf(buf, sizeof(buf), "#s", str);
+    assert(len == 4 + BIG);
+    r = unpackf(buf, (size_t)len, "#70001s", str_out);
+    assert(r == len && strcmp(str, str_out) == 0);
+    assert(unpackf(buf, (size_t)len, "#70000s", str_out) == PACKF_BE_CUT_OFF);
+
+    assert(packf(buf, sizeof(buf), "=[70000c]", bytes) == PACKF_BE_CUT_OFF);
+    len = packf(buf, sizeof(buf), "#[70000c] w", bytes, 0xABCD);
+    assert(len == 4 + BIG + 2);
+    assert(buf[0] == 0x00 && buf[1] == 0x01 && buf[2] == 0x11 && buf[3] == 0x70);
+    {
+        /* an old reader that knows a shorter body skips the rest */
+        uint8_t head[4];
+        uint16_t next = 0;
+
+        r = unpackf(buf, (size_t)len, "#[4c] w", head, &next);
+        assert(r == len && memcmp(head, bytes, 4) == 0 && next == 0xABCD);
+    }
+
+    /* inside a struct the length members are uint32_t, in host order */
+    {
+# pragma pack(1)
+        struct msg
+        {
+            uint32_t    n;
+            uint16_t    v[4];
+            uint32_t    name_len;
+            char        name[8];
+            uint32_t    body_len;
+            struct { uint16_t x; } body;
+            uint8_t     tail;
+        } in, back;
+# pragma pack()
+        char const *fmt = "[#4w #8s #[w] c]";
+
+        memset(&in, 0, sizeof(in));
+        in.n = 2;
+        in.v[0] = 0x0102;
+        in.v[1] = 0x0304;
+        strcpy(in.name, "abc");
+        in.body.x = 0x0506;
+        in.tail = 0x5A;
+
+        len = packf(buf, sizeof(buf), fmt, &in);
+        assert(len == (4 + 4) + (4 + 3) + (4 + 2) + 1);
+        assert(buf[3] == 2 && buf[4] == 0x01 && buf[7] == 0x04);
+        assert(buf[11] == 3 && buf[12] == 'a');
+        assert(buf[18] == 2 && buf[19] == 0x05 && buf[20] == 0x06);
+        assert(buf[21] == 0x5A);
+
+        memset(&back, 0xFF, sizeof(back));
+        r = unpackf(buf, (size_t)len, fmt, &back);
+        assert(r == len);
+        assert(back.n == 2 && back.v[0] == 0x0102 && back.v[1] == 0x0304);
+        assert(back.name_len == 3 && strcmp(back.name, "abc") == 0);
+        assert(back.body_len == 2 && back.body.x == 0x0506);
+        assert(back.tail == 0x5A);
+
+        /* a length member that does not fit an int is rejected */
+        in.n = 0x80000000u;
+        assert(packf(buf, sizeof(buf), fmt, &in) == PACKF_INVALID_ARG);
+    }
+
+    /* an empty struct array still steps over the 4-byte length member */
+    {
+# pragma pack(1)
+        struct msg
+        {
+            uint32_t    n;
+            struct { uint32_t a; char s[8]; } e[2];
+            uint8_t     tail;
+        } in, back;
+# pragma pack()
+
+        memset(&in, 0, sizeof(in));
+        in.tail = 0x5A;
+        len = packf(buf, sizeof(buf), "[#2[d 8S] c]", &in);
+        assert(len == 4 + 1 && buf[4] == 0x5A);
+        memset(&back, 0xFF, sizeof(back));
+        r = unpackf(buf, (size_t)len, "[#2[d 8S] c]", &back);
+        assert(r == len && back.n == 0 && back.tail == 0x5A);
+    }
+
+    /* untrusted input: a declared length above INT_MAX, or just larger
+     * than the input, must fail cleanly */
+    {
+        uint8_t evil[8] = {0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3, 4};
+        uint8_t dst[8];
+
+        assert(unpackf(evil, sizeof(evil), "#c", &c32[0], dst) == PACKF_OUT_OF_BUF);
+        assert(unpackf(evil, sizeof(evil), "#s", dst) == PACKF_OUT_OF_BUF);
+        assert(unpackf(evil, sizeof(evil), "#[4c]", dst) == PACKF_OUT_OF_BUF);
+        assert(unpackf(evil, sizeof(evil), "#a", &c32[0]) == PACKF_OUT_OF_BUF);
+        evil[0] = 0x7F;
+        assert(unpackf(evil, sizeof(evil), "#c", &c32[0], dst) == PACKF_OUT_OF_BUF);
+        assert(unpackf(evil, sizeof(evil), "#D", &c32[0], dst) == PACKF_INVALID_ARG);
+        assert(unpackf(evil, sizeof(evil), "#[4c]", dst) == PACKF_OUT_OF_BUF);
+        /* a truncated prefix */
+        assert(unpackf(evil, 3, "#c", &c32[0], dst) == PACKF_OUT_OF_BUF);
+    }
+
+    printf("lv 4-byte prefix: ok\n");
+}
+
 int main(void)
 {
     test_roundtrip();
@@ -561,6 +713,7 @@ int main(void)
     test_stray_close_bracket();
     test_lv_count_width();
     test_little_endian();
+    test_lv_4byte_prefix();
 
     printf("all tests passed\n");
     return 0;

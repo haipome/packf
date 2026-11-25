@@ -27,7 +27,7 @@ extern "C"
  * types (including structs and arrays) can be conveniently converted between
  * host byte order and network byte order for network transmission.
  *
- * format: [-=][num]type     [] means optional
+ * format: [-=#][num]type    [] means optional
  *
  * ---------------------------------------------------------------
  *  type   |    means
@@ -44,7 +44,7 @@ extern "C"
  * --------------------------------------------------------------
  *    ]    |    struct end
  *  space  |    spaces may be used to make the format string more readable,
- *         |    but not between -/= num and type
+ *         |    but not between -/=/# num and type
  *    <    |    switch the wire byte order to little endian
  *    >    |    switch the wire byte order to big endian (the default)
  * --------------------------------------------------------------
@@ -53,17 +53,20 @@ extern "C"
  *    The wire format is big endian (network byte order) unless < is used.
  *    < and > are tokens of their own, placed between fields like a space;
  *    they apply to all following fields: the values of w d D f F and the
- *    2-byte length prefix of =. (c, s, a and the 1-byte prefix of - have
- *    no byte order; length fields in a local struct stay in host order.)
+ *    2-byte / 4-byte length prefix of = / #. (c, s, a and the 1-byte
+ *    prefix of - have no byte order; length fields in a local struct stay
+ *    in host order.)
  *    A struct inherits the byte order in effect at its [, and a switch
  *    inside [] ends at the matching ].
  *    example: packf(buf, sizeof(buf), "<wd", a, b);       all little endian
  *             packf(buf, sizeof(buf), "w <d >w", a, b, c); mixed
  *
  * note:
- * 1. When - or = is present, it denotes an LV (len + value) field;
+ * 1. When -, = or # is present, it denotes an LV (len + value) field;
  *    num, if present, represents the maximum count of values.
- *      1): - means the length field is 1 byte; = means 2 bytes.
+ *      1): - means the length field is 1 byte; = means 2 bytes; # means
+ *          4 bytes. Lengths are ints, so # carries at most INT_MAX; a
+ *          larger length on the wire fails with PACKF_OUT_OF_BUF.
  *
  *      2): For types acwdDfF, a len argument must be supplied before the value.
  *          example: char buf[1024]; int array[64];
@@ -72,8 +75,9 @@ extern "C"
  *          This packs 21 bytes into buf (1-byte length + 20 bytes of data),
  *          and returns 21.
  *          When unpacking, the len argument is a pointer whose type matches
- *          the length prefix: uint8_t * for -, uint16_t * for =. Only that
- *          many bytes are written, so do NOT pass an int *.
+ *          the length prefix: uint8_t * for -, uint16_t * for =,
+ *          uint32_t * for #. Only that many bytes are written, so do NOT
+ *          pass an int * for - or =.
  *          example: uint8_t n; unpackf(buf, len, "-64d", &n, array);
  *
  *      3): For type s, no explicit len is needed; strlen determines the length.
@@ -84,6 +88,8 @@ extern "C"
  *          **When s appears inside a struct, a len field must be declared before
  *          it in the struct definition but does not need to be assigned a value
  *          (to keep the struct definition consistent with the protocol format).
+ *          The len field is as wide as the prefix: uint8_t for -, uint16_t
+ *          for =, uint32_t for #.
  *
  *      4): For struct type [, if num is absent, no len needs to be specified;
  *          the length is determined by the actual packed struct size. Like s,
@@ -105,7 +111,7 @@ extern "C"
  *                   unpackf(buf, n, "-[d]", &body);     length not returned
  *                   unpackf(buf, n, "[-[d]]", &outer);  outer.len is set
  *
- * 2. When neither - nor = is present:
+ * 2. When none of -, = and # is present:
  *      1): For types acwdD[fF, when num is present it denotes an array;
  *          the argument should be an array or pointer.
  *
@@ -115,15 +121,17 @@ extern "C"
  *          S differs from s: when num is present and the string is shorter
  *          than num, S does NOT pad with '\0'.
  *
- *      3): WARNING: when unpacking, a string without num ("s", "-s", "=s")
- *          is copied with no limit on the destination size; the number of
- *          bytes written is decided by the input data alone (up to 65536
- *          for "=s"), like sscanf "%s". When the input is not trusted,
+ *      3): WARNING: when unpacking, a string without num ("s", "-s", "=s",
+ *          "#s") is copied with no limit on the destination size; the
+ *          number of bytes written is decided by the input data alone (up
+ *          to 65536 for "=s", the whole input for "#s"), like sscanf "%s".
+ *          When the input is not trusted,
  *          always give num ("-32s", "32s", "32S") so that an oversized
  *          string is rejected with PACKF_BE_CUT_OFF.
  *          The same holds for an LV array of cwdDfF without num ("-d",
- *          "=d"): the input decides the element count, up to 255 for - and
- *          65535 for =. Give num ("-64d") to bound it.
+ *          "=d", "#d"): the input decides the element count, up to 255
+ *          for -, 65535 for =, and as many as the input holds for #. Give
+ *          num ("-64d") to bound it.
  *          An LV struct without num ("-[...]") is not affected: its body
  *          is bounded by the format.
  *
