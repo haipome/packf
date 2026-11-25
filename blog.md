@@ -253,7 +253,7 @@ static float __bswap_f(float x) {
 这比 `*(uint32_t *)&x` 安全，但还有一个隐患：交换之后的位模式已经不是一个有意义的浮点数了，却仍然以 `float` 的身份在函数间传递，在某些平台上（比如用 x87 浮点栈的 32 位 x86）这样的值可能被悄悄改写。现在的实现干脆不让它成为浮点值，所有类型统一按原始字节反转：
 
 ```c
-static inline void __copy_rev(void *dst, void const *src, size_t n)
+static inline void copy_rev(void *dst, void const *src, size_t n)
 {
     unsigned char tmp[8];
     unsigned char const *s = src;
@@ -280,7 +280,7 @@ while (bracket_stack) {
 }
 ```
 
-递归调用 `__packf` 处理结构体内部，然后跳过对应的 `]` 继续外层。递归时带着当前的嵌套深度和字节序：深度用来识别顶层多余的 `]`（返回 `PACKF_NOT_MATCH`），字节序按值传递，所以括号里的切换自然不会影响外层。
+递归调用 `do_pack` 处理结构体内部，然后跳过对应的 `]` 继续外层。递归时带着当前的嵌套深度和字节序：深度用来识别顶层多余的 `]`（返回 `PACKF_NOT_MATCH`），字节序按值传递，所以括号里的切换自然不会影响外层。
 
 ### 边界检查
 

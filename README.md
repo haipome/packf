@@ -264,7 +264,7 @@ int packf(void *dest, size_t max, const char *format, ...);
 
 // Unpack binary data from src into variadic pointer arguments.
 // Returns total bytes consumed, or a negative error code on failure.
-int unpackf(void *src, size_t max, const char *format, ...);
+int unpackf(const void *src, size_t max, const char *format, ...);
 ```
 
 ### Incremental (cursor-based) variants

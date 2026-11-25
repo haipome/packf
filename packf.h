@@ -8,8 +8,8 @@
  * or commercial. It's free.
  */
 
-# ifndef _PACKF_H_
-# define _PACKF_H_
+# ifndef PACKF_H
+# define PACKF_H
 
 # include <stdint.h>
 # include <stddef.h>
@@ -206,7 +206,7 @@ extern int packf(void *dest, size_t max, char const *format, ...);
  *      On failure, output arguments may have been partially written; do
  *      not rely on their contents.
  */
-extern int unpackf(void *src, size_t max, char const *format, ...);
+extern int unpackf(void const *src, size_t max, char const *format, ...);
 
 /*
  * Function: vpackf : variable pack format
