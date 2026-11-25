@@ -1,6 +1,6 @@
 # packf
 
-A lightweight binary serialization library for C/C++ that converts data structures to and from network byte order using a `printf`-style format string.
+A lightweight binary serialization library for C/C++ that converts data structures to and from a binary wire format using a `printf`-style format string.
 
 **Author:** Haipo Yang &lt;yang@haipo.me&gt; | **License:** Public Domain
 
@@ -10,8 +10,16 @@ A lightweight binary serialization library for C/C++ that converts data structur
 
 - [Overview](#overview)
 - [Advantages](#advantages)
-- [API Reference](#api-reference)
 - [Format String Syntax](#format-string-syntax)
+  - [Types](#types)
+  - [Every form at a glance](#every-form-at-a-glance)
+  - [Fields inside a struct](#fields-inside-a-struct)
+  - [Rules that are easy to mix up](#rules-that-are-easy-to-mix-up)
+  - [Byte order](#byte-order)
+  - [`s` vs `S`](#s-vs-s)
+  - [Forward compatibility with `-[...]`](#forward-compatibility-with--)
+  - [Untrusted input](#untrusted-input)
+- [API Reference](#api-reference)
 - [Usage Examples](#usage-examples)
 - [Building](#building)
 
@@ -19,17 +27,24 @@ A lightweight binary serialization library for C/C++ that converts data structur
 
 ## Overview
 
-packf provides `packf`/`unpackf` and their variants to serialize and deserialize C data — scalars, arrays, strings, and packed structs — into a portable binary wire format (big-endian by default, little-endian on request). The interface mirrors the familiarity of `sprintf`/`sscanf`: a single format string drives the entire operation.
+packf provides `packf`/`unpackf` and their variants to serialize and deserialize C data — scalars, arrays, strings, and packed structs — into a portable binary wire format (big-endian by default, little-endian on request). The interface mirrors `sprintf`/`sscanf`: a single format string describes the wire layout and drives both directions.
 
 ```c
 char buf[256];
 
-// Pack: host → network byte order
+// Pack: host → wire (network byte order)
 int len = packf(buf, sizeof(buf), "wd", 0x1234, 0xDEADBEEF);
 
-// Unpack: network → host byte order
+// Unpack: wire → host
 uint16_t a; uint32_t b;
 unpackf(buf, len, "wd", &a, &b);
+```
+
+A whole message, including variable-length parts, fits in one line:
+
+```c
+// 4-byte type, then up to 10 users, each: 4-byte id, LV name, compact password
+packf(buf, sizeof(buf), "[d =10[d -64s 32S]]", &msg);
 ```
 
 ---
@@ -38,12 +53,193 @@ unpackf(buf, len, "wd", &a, &b);
 
 - **Zero dependencies** — a single `.c`/`.h` pair, no external libraries required.
 - **Familiar API** — format-string driven, just like `sprintf`/`sscanf`.
-- **Comprehensive type support** — 8/16/32/64-bit integers, float, double, strings, byte arrays, and nested structs.
-- **LV (Length–Value) fields** — built-in support for variable-length arrays and strings with a 1-byte or 2-byte length prefix, eliminating manual length bookkeeping.
-- **Automatic byte-swap** — all multi-byte types are converted to/from the wire byte order automatically (big-endian by default, `<` for little-endian). No manual `htons`/`ntohl` calls.
-- **Struct-aware** — can pack/unpack directly from `#pragma pack(1)` structs, keeping your code in sync with the wire format.
-- **Incremental packing** — `vpackf`/`vunpackf` variants update the current position and remaining length automatically, making multi-step message assembly easy.
+- **One description, two directions** — the same format string packs and unpacks.
+- **Comprehensive type support** — 8/16/32/64-bit integers, float, double, strings, padding, arrays, and nested structs.
+- **LV (Length–Value) fields** — built-in variable-length arrays, strings and structs with a 1-byte or 2-byte length prefix; no manual length bookkeeping.
+- **Automatic byte-swap** — multi-byte values are converted to/from the wire byte order (big-endian by default, `<` for little-endian). No manual `htons`/`ntohl` calls.
+- **Struct-aware** — packs/unpacks directly from `#pragma pack(1)` structs, so the struct definition mirrors the wire format.
+- **Incremental packing** — `vpackf`/`vunpackf` update the current position and remaining length, making multi-step message assembly easy.
+- **No allocation, no global state** — thread-safe; errors are reported by return code only.
 - **Public domain** — use freely in any project, commercial or otherwise.
+
+---
+
+## Format String Syntax
+
+A format string is a sequence of fields. Each field has up to three parts:
+
+```
+[-=][num]type
+```
+
+| Part | Meaning |
+|------|---------|
+| `-` or `=` | Optional. Puts a length prefix on the wire — **1 byte** for `-`, **2 bytes** for `=` — which makes the field variable-length (an *LV* field). |
+| `num` | Optional. Without a prefix: the fixed count. With a prefix: the **maximum** count. |
+| `type` | One type character from the table below. |
+
+Between fields you may put spaces (for readability) and the byte-order switches `<` and `>`. Nothing may come between the parts of one field: `"-64 d"` and `"-<d"` are errors.
+
+### Types
+
+| Type | Wire size | C type |
+|------|-----------|--------|
+| `c`  | 1 byte    | `int8_t` / `uint8_t` |
+| `w`  | 2 bytes   | `int16_t` / `uint16_t` |
+| `d`  | 4 bytes   | `int32_t` / `uint32_t` |
+| `D`  | 8 bytes   | `int64_t` / `uint64_t` |
+| `f`  | 4 bytes   | `float` |
+| `F`  | 8 bytes   | `double` |
+| `s`  | variable  | `char` string |
+| `S`  | variable  | `char` string, compact on the wire (see [`s` vs `S`](#s-vs-s)) |
+| `a`  | variable  | zero byte(s) / padding; takes no value |
+| `[`…`]` | variable | struct, described by the fields between the brackets |
+
+### Every form at a glance
+
+There are 16 forms in total. The tables use `-`; `=` works the same with a 2-byte prefix and a `uint16_t` count. "Pack" and "Unpack" are the arguments you pass for a field at the top level of the format.
+
+**Numbers** — `c w d D f F`, shown with `d`:
+
+| Format | Meaning | On the wire | Pack | Unpack |
+|--------|---------|-------------|------|--------|
+| `d`    | one value | 4 bytes | the value | pointer to it |
+| `4d`   | array of exactly 4 | 4 × 4 bytes | `int32_t *` | `int32_t *` |
+| `-4d`  | array of 0–4 | prefix (**element count**) + count × 4 bytes | `int` count, `int32_t *` | `uint8_t *` count, `int32_t *` |
+| `-d`   | array, no maximum | same | same | same |
+
+Values are passed the way C promotes variadic arguments: `c`, `w`, `d` as `int`, `D` as `int64_t`, `f` and `F` as `double`.
+
+**Strings** — `s S`. The argument is always a `char *`; no length is passed.
+
+| Format | Meaning | On the wire |
+|--------|---------|-------------|
+| `s`    | C string | `strlen + 1` bytes, `\0` included |
+| `16s`  | fixed-width field, up to 15 chars | always 16 bytes, padded with `\0` |
+| `16S`  | compact string, up to 15 chars | `strlen + 1` bytes, `\0` included |
+| `-16s` | LV string, up to 15 chars | prefix (**byte count**) + the chars, no `\0` |
+| `-s`   | LV string, no maximum | same |
+
+**Padding** — `a`:
+
+| Format | Meaning | On the wire | Pack | Unpack |
+|--------|---------|-------------|------|--------|
+| `a`    | one zero byte | 1 byte | — | — |
+| `4a`   | four zero bytes | 4 bytes | — | — |
+| `-4a`, `-a` | variable padding | prefix + that many zero bytes | `int` count | `uint8_t *` count |
+
+When unpacking, padding is skipped without checking that it is zero.
+
+**Structs** — `[...]`. The argument is a pointer to a `#pragma pack(1)` struct (or array of them).
+
+| Format | Meaning | On the wire | Pack | Unpack |
+|--------|---------|-------------|------|--------|
+| `[...]`   | one struct | its fields in order | struct pointer | struct pointer |
+| `3[...]`  | array of exactly 3 | 3 structs | array pointer | array pointer |
+| `-3[...]` | array of 0–3 | prefix (**element count**) + count structs | `int` count, array pointer | `uint8_t *` count, array pointer |
+| `-[...]`  | one length-prefixed struct | prefix (**byte length** of the body) + the struct | struct pointer | struct pointer |
+
+### Fields inside a struct
+
+Inside `[...]` no arguments are passed; each field maps to a member of the struct instead. An LV field needs a length member right before its data, sized like the prefix (`uint8_t` for `-`, `uint16_t` for `=`), so the struct keeps the same shape as the protocol.
+
+| Field | Declare in the struct | Length member |
+|-------|-----------------------|---------------|
+| `d` | `int32_t x;` | — |
+| `4d` | `int32_t x[4];` | — |
+| `-4d` | `uint8_t n; int32_t x[4];` | **you set it** before packing; filled in when unpacking |
+| `16s`, `16S` | `char s[16];` | — |
+| `-16s` | `uint8_t n; char s[16];` | automatic: ignored when packing (`strlen` is used), filled in when unpacking |
+| `4a` | `uint8_t pad[4];` | — |
+| `[...]`, `3[...]` | `struct T t;` / `struct T t[3];` | — |
+| `-3[...]` | `uint8_t n; struct T t[3];` | **you set it** before packing; filled in when unpacking |
+| `-[...]` | `uint8_t n; struct T t;` | automatic: ignored when packing, filled in when unpacking |
+
+- Length members in a struct are always in host byte order; only the prefix on the wire is converted.
+- With `num`, the struct always reserves the full maximum (`x[4]`), whatever the actual count.
+- Forms without a fixed local size — `s`, `-s`, `-d` and other prefixed fields without `num` — take a variable number of bytes in the struct, so the members after them have no fixed offset. Avoid them inside structs, or put them last.
+- All elements of a struct array must have the same local size.
+
+### Rules that are easy to mix up
+
+- **What the prefix counts.** Elements for number arrays and struct arrays; bytes for strings and for `-[...]`.
+- **Whether you pass a count.** Yes for number arrays, struct arrays and LV padding; no for strings and `-[...]`, where it is computed.
+- **Count type differs by direction.** Packing takes an `int`; unpacking takes a pointer sized like the prefix — `uint8_t *` for `-`, `uint16_t *` for `=`. Only that many bytes are written, so never pass an `int *`.
+- **`num` on a string includes the `\0`.** `16s`, `16S` and `-16s` all hold at most 15 characters; a longer string fails with `PACKF_BE_CUT_OFF`. `num` on anything else is a plain element count.
+- **Exceeding a maximum is an error, not a truncation.** `-4d` with a count of 5, or a prefix value too large for 1 or 2 bytes, returns `PACKF_BE_CUT_OFF`.
+
+### Byte order
+
+The wire format is big-endian (network byte order) by default. Two switches change it:
+
+| Switch | Meaning |
+|--------|---------|
+| `<`    | following fields are **little-endian** on the wire |
+| `>`    | following fields are **big-endian** on the wire (default) |
+
+```c
+packf(buf, sizeof(buf), "<wd", a, b);          // all little-endian
+packf(buf, sizeof(buf), "w <d >w", a, b, c);   // mixed in one message
+```
+
+- A switch is a token of its own, placed between fields like a space.
+- It affects the values of `w d D f F` and the 2-byte length prefix of `=`. `c`, `s`, `S`, `a` and the 1-byte prefix of `-` have no byte order.
+- A struct inherits the byte order in effect at its `[`. A switch inside `[...]` ends at the matching `]`, so every element of a struct array has the same layout.
+
+### `s` vs `S`
+
+`S` differs from `s` in exactly one case: **no prefix, with `num`**. Without `num`, or with a `-`/`=` prefix, they are identical.
+
+| Format | Wire bytes | Bytes in the local struct | Use case |
+|--------|-----------|---------------------------|----------|
+| `s`    | `strlen + 1` | `strlen + 1` | plain C string |
+| `16s`  | always 16 | 16 | fixed-width wire field |
+| `16S`  | `strlen + 1` | 16 | compact wire, fixed-size `char field[16]` locally |
+
+A member like `char passwd[30]` occupies 30 bytes in memory, but the actual string is usually shorter. `30S` sends only the real string while still stepping over the full 30-byte member:
+
+```
+Struct in memory:   [b][a][z][i][n][g][a][\0][\0]..[\0]   ← 30 bytes
+Wire with 30s:      [b][a][z][i][n][g][a][\0][\0]..[\0]   ← always 30 bytes
+Wire with 30S:      [b][a][z][i][n][g][a][\0]             ← only 8 bytes
+```
+
+Compared with `-30s`, `30S` needs no length member in the struct and ends with `\0` on the wire instead of starting with a length.
+
+### Forward compatibility with `-[...]`
+
+`-[...]` and `=[...]` write the byte length of the struct body in front of it. When unpacking, the reader parses the fields it knows and then jumps to the end of the declared length. So a newer sender can **append** fields to the struct and older readers keep working:
+
+```c
+// New sender: struct has an extra trailing field
+packf(buf, sizeof(buf), "-[dwd] w", &v2, 0xABCD);
+// wire: 0A | 00 00 00 07 | 00 1E | 00 00 00 63 | AB CD
+//       len=10  id=7       age=30  score=99      next field
+
+// Old reader: knows only the first two fields
+unpackf(buf, len, "-[dw] w", &v1, &next);
+// v1.id == 7, v1.age == 30, the 4 unknown bytes are skipped, next == 0xABCD
+```
+
+Limits:
+
+- It works one way only. A newer reader fails with `PACKF_OUT_OF_BUF` on older data, because the declared length is too short for its format; check a version field first and pick the format accordingly.
+- Fields can only be added at the end, never inserted, removed or retyped.
+- The form with `num` (`-3[...]`) is an element count and cannot skip anything. To make array elements extensible, give each its own length: `=10[ -[...] ]`.
+- The body is limited to 255 bytes with `-` and 65535 bytes with `=`.
+
+### Untrusted input
+
+`unpackf` checks every read against the source buffer, but it cannot know how large your destinations are. When the data comes from the network:
+
+- **Always give `num` for strings and LV arrays.** Without it the input alone decides how much is written, like `sscanf("%s")`:
+  - `s`, `S`, `-s`, `=s` — up to the rest of the buffer, or 65535 bytes plus `\0` for `=s`
+  - `-d`, `=d` and the other number types — up to 255 or 65535 elements
+
+  With `num` (`-32s`, `32s`, `32S`, `-64d`), anything larger fails with `PACKF_BE_CUT_OFF`. `-[...]` is safe without `num`: its body is bounded by the format.
+- **Size destinations for the maximum.** `-64d` needs room for 64 elements; `-32s` needs 32 bytes.
+- **Check the return value.** On failure, outputs may be partially written.
+- **Never take the format string from input.** It must match the arguments exactly, as with `printf`; the compiler cannot check it.
 
 ---
 
@@ -93,7 +289,7 @@ There is no global error state — the negative return code alone identifies the
 | `PACKF_NOT_FORMAT`    | -2 | Unknown type character in the format string |
 | `PACKF_NOT_MATCH`     | -3 | Unmatched `[` / `]` in the format string |
 | `PACKF_EXPECT_FORMAT` | -4 | Format string ended where a type was expected |
-| `PACKF_BE_CUT_OFF`    | -5 | Data would be truncated (LV/string longer than declared max) |
+| `PACKF_BE_CUT_OFF`    | -5 | Data would be truncated (LV/string longer than declared max, or length too large for the prefix) |
 | `PACKF_NULL_POINTER`  | -6 | A required pointer argument was NULL |
 | `PACKF_INVALID_ARG`   | -7 | Invalid size/length (negative LV length, size > `INT_MAX`, format number overflow, etc.) |
 
@@ -103,110 +299,10 @@ There is no global error state — the negative return code alone identifies the
 // Advance a pointer and decrease a remaining-length variable.
 PACKF_PASS(ptr, left_len, size);
 
-// Stringify a macro-defined integer constant.
-// e.g. PACKF_STR(MAX_LEN) where MAX_LEN=1024 expands to "1024"
+// Stringify a macro-defined integer constant, to build format strings.
+// e.g. with MAX_NAME defined as 64, "-" PACKF_STR(MAX_NAME) "s" is "-64s"
 PACKF_STR(macro);
 ```
-
----
-
-## Format String Syntax
-
-```
-format token: [-=][num]type
-```
-
-| Part | Meaning |
-|------|---------|
-| `-`  | LV field with a **1-byte** length prefix |
-| `=`  | LV field with a **2-byte** length prefix |
-| `num`| Array count / max length (optional) |
-| `type` | One of the type characters below |
-
-Spaces in the format string are ignored and can be used for readability.
-
-### Byte order
-
-The wire format is big-endian (network byte order) by default. Two switches change it:
-
-| Switch | Meaning |
-|--------|---------|
-| `<`    | following fields are **little-endian** on the wire |
-| `>`    | following fields are **big-endian** on the wire (default) |
-
-```c
-packf(buf, sizeof(buf), "<wd", a, b);          // all little-endian
-packf(buf, sizeof(buf), "w <d >w", a, b, c);   // mixed in one message
-```
-
-- A switch is a token of its own, placed between fields like a space — not between `-`/`=`, `num` and `type` (`"-<d"` is `PACKF_NOT_FORMAT`).
-- It affects the values of `w d D f F` and the 2-byte length prefix of `=`. `c`, `s`, `a` and the 1-byte prefix of `-` have no byte order; length fields in a local struct stay in host order.
-- A struct inherits the byte order in effect at its `[`. A switch inside `[...]` ends at the matching `]`, so every element of a struct array has the same layout.
-
-### Type characters
-
-| Type | Wire size | C type |
-|------|-----------|--------|
-| `c`  | 1 byte    | `int8_t` / `uint8_t` |
-| `w`  | 2 bytes   | `int16_t` / `uint16_t` |
-| `d`  | 4 bytes   | `int32_t` / `uint32_t` |
-| `D`  | 8 bytes   | `int64_t` / `uint64_t` |
-| `f`  | 4 bytes   | `float` |
-| `F`  | 8 bytes   | `double` |
-| `s`  | variable  | null-terminated string; with `num`: fixed `num`-byte wire field, padded with `\0` |
-| `S`  | variable  | like `s` without LV prefix + `num`: wire size = `strlen+1` (compact), but local struct pointer advances `num` bytes |
-| `a`  | variable  | zero byte(s) / padding |
-| `[`…`]` | variable | struct (argument must be a `#pragma pack(1)` struct pointer) |
-
-### Format rules
-
-**No prefix (`[-=]` absent)**
-
-| Format | Behaviour |
-|--------|-----------|
-| `type` | Single scalar value |
-| `Ntype` | Array of N elements; argument is a pointer |
-| `s` | Pack/unpack string using `strlen + 1` bytes on the wire |
-| `Ns` | Fixed N-byte wire field; copies string and pads the rest with `\0` |
-| `NS` | **Compact struct field:** wire = `strlen+1` bytes (variable); local struct pointer advances N bytes |
-
-**With LV prefix (`-` or `=`)**
-
-| Format | Behaviour |
-|--------|-----------|
-| `-type` | 1-byte length + value (length supplied as an int argument when packing) |
-| `=type` | 2-byte length + value |
-| `-Ntype` | 1-byte length + up to N elements; N is the declared maximum |
-| `-Ns` | 1-byte length + string bytes (no `\0` on wire); N is the max string length including `\0` |
-| `-[…]` | 1-byte length + struct bytes (length computed automatically) |
-| `=N[…]` | 2-byte element count + N struct instances |
-
-> **Structs inside structs:** When an LV field (`-s`, `=N[…]`, etc.) appears inside a `[…]` block, the struct definition must contain the corresponding length member (to stay in sync with the protocol layout), but the member's value is read/written automatically — you do not pass it as an argument.
-
-### `s` vs `S` in depth
-
-`S` only differs from `s` in one specific case: **no LV prefix, with `num`**. In all other cases (no `num`, or with a `-`/`=` prefix) they are identical.
-
-| Format | Wire bytes | Local struct pointer advance | Use case |
-|--------|-----------|------------------------------|----------|
-| `s` | `strlen+1` | `strlen+1` | Plain C string, no fixed field width |
-| `Ns` | fixed `N` | `N` | Fixed-width wire field; receiver always reads exactly N bytes |
-| `NS` | `strlen+1` (variable) | fixed `N` | Compact wire; local struct has `char field[N]` |
-
-**Why `NS` exists — the impedance mismatch problem:**
-
-A struct field like `char passwd[30]` occupies 30 bytes in memory, but the actual password may be much shorter. `30S` solves this by transmitting only the real string data on the wire while still advancing the struct pointer past the full 30-byte field:
-
-```
-Struct in memory:   [b][a][z][i][n][g][a][\0][\0]..[\0]   ← 30 bytes
-Wire with 30s:      [b][a][z][i][n][g][a][\0][\0]..[\0]   ← always 30 bytes
-Wire with 30S:      [b][a][z][i][n][g][a][\0]             ← only 8 bytes
-```
-
-- **Pack (`30S`):** writes `strlen("bazinga")+1 = 8` bytes to the wire; advances the struct pointer by 30.
-- **Unpack (`30S`):** reads from the wire until `\0` (8 bytes); advances the struct pointer by 30.
-
-> **Note:** Because the wire size of `NS` is variable, the receiver cannot treat it as a fixed-width field. The surrounding message framing (e.g. a total length prefix) must define the boundary.
 
 ---
 
@@ -254,10 +350,8 @@ len = packf(buf, sizeof(buf), "-32s", "hello");
 
 char out[32];
 unpackf(buf, len, "-32s", out);
-// out == "hello"
+// out == "hello" ('\0' terminated)
 ```
-
-> **Warning:** when unpacking, a string without `num` (`s`, `-s`, `=s`) is copied with no limit on the destination size — the input data alone decides how many bytes are written (up to 65536 for `=s`), like `sscanf("%s")`. For untrusted input always give `num` (`-32s`, `32s`, `32S`), so an oversized string fails with `PACKF_BE_CUT_OFF`.
 
 ### 3. Arrays
 
@@ -265,17 +359,19 @@ unpackf(buf, len, "-32s", out);
 char buf[256];
 int32_t arr[] = {10, 20, 30, 40, 50};
 
+// Fixed array: exactly 5 elements, no prefix
+int len = packf(buf, sizeof(buf), "5d", arr);
+// len == 5*4 == 20
+
 // LV array: 1-byte element count + array data (max 64 elements)
-int len = packf(buf, sizeof(buf), "-64d", 5, arr);
+len = packf(buf, sizeof(buf), "-64d", 5, arr);
 // len == 1 + 5*4 == 21
 
 int32_t out[64];
-uint8_t count;
+uint8_t count;                 // uint8_t for '-', uint16_t for '='
 unpackf(buf, len, "-64d", &count, out);
 // count == 5, out[0..4] == {10,20,30,40,50}
 ```
-
-> **Note:** when packing, the element count is passed as an `int`. When unpacking, it is a pointer matching the length prefix — `uint8_t *` for `-`, `uint16_t *` for `=`. Only that many bytes are written, so do not pass an `int *`.
 
 ### 4. Structs
 
@@ -318,14 +414,14 @@ This mirrors the pattern used in `test.c`:
 #pragma pack(1)
 struct User {
     uint32_t uid;
-    uint8_t  name_len;
+    uint8_t  name_len;     /* for -64s: computed when packing, filled in when unpacking */
     char     name[64];
     char     passwd[32];
 };
 
 struct Message {
     uint32_t    type;
-    uint16_t    user_count;    /* written by =10[...] automatically */
+    uint16_t    user_count;    /* for =10[...]: set it before packing */
     struct User users[10];
 };
 #pragma pack()
@@ -334,21 +430,21 @@ struct Message msg = {0};
 msg.type = 1;
 msg.user_count = 2;
 msg.users[0].uid = 1001;
-msg.users[0].name_len = strlen("alice");
 strcpy(msg.users[0].name,   "alice");
 strcpy(msg.users[0].passwd, "s3cr3t");
 /* ... fill users[1] ... */
 
 char buf[1024];
 // =10[...]: 2-byte user count + up to 10 user structs
-// -64s:     1-byte length prefix + name bytes, no '\0' on wire (max field 64 bytes incl. '\0')
-// 32S:      compact wire (strlen+1 bytes); struct pointer advances 32 bytes to match char passwd[32]
+// -64s:     1-byte length prefix + name bytes, no '\0' on wire (max 63 chars)
+// 32S:      compact wire (strlen+1 bytes); steps over the full char passwd[32] locally
 int len = packf(buf, sizeof(buf),
                 "[ d  =10[d -64s 32S]  ]",
                 &msg);
 
 struct Message out = {0};
 unpackf(buf, len, "[ d  =10[d -64s 32S]  ]", &out);
+// out.user_count == 2, out.users[0].name_len == 5
 ```
 
 ### 6. Incremental packing with `vpackf`
@@ -361,7 +457,7 @@ void *pos = buf;
 int  left = sizeof(buf);
 
 vpackf(&pos, &left, "w", (int)0x0001);   // message type
-vpackf(&pos, &left, "d", (int)42);        // payload length placeholder
+vpackf(&pos, &left, "d", (int)42);        // sequence number
 vpackf(&pos, &left, "-32s", "hello");     // LV string payload
 
 int total = sizeof(buf) - left;  // total bytes written

@@ -107,6 +107,11 @@ extern "C"
  *          for "=s"), like sscanf "%s". When the input is not trusted,
  *          always give num ("-32s", "32s", "32S") so that an oversized
  *          string is rejected with PACKF_BE_CUT_OFF.
+ *          The same holds for an LV array of cwdDfF without num ("-d",
+ *          "=d"): the input decides the element count, up to 255 for - and
+ *          65535 for =. Give num ("-64d") to bound it.
+ *          An LV struct without num ("-[...]") is not affected: its body
+ *          is bounded by the format.
  *
  * 3. [] denotes a struct; the argument should be a pointer to the struct.
  *      1): The struct must be defined between # pragma pack(1) and
