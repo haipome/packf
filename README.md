@@ -101,14 +101,11 @@ There is no global error state — the negative return code alone identifies the
 
 ```c
 // Advance a pointer and decrease a remaining-length variable.
-PACK_PASS(ptr, left_len, size);
+PACKF_PASS(ptr, left_len, size);
 
 // Stringify a macro-defined integer constant.
-// e.g. STR_OF(MAX_LEN) where MAX_LEN=1024 expands to "1024"
-STR_OF(macro);
-
-// Return the negated line number if x is negative (useful for debugging).
-NEG_RET_LN(x);
+// e.g. PACKF_STR(MAX_LEN) where MAX_LEN=1024 expands to "1024"
+PACKF_STR(macro);
 ```
 
 ---
