@@ -400,7 +400,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     if (from == FROM_PTR)
                         *locale = (char *)*locale + lv_type;
                     NEG_RET(__packf(net, left_len, f, FROM_PTR,
-                                NULL, locale, depth + 1, order));
+                                va, locale, depth + 1, order));
                     lv_len = (char *)*net - (char *)struct_start_net;
                     PUT_LV_LEN(p_struct_len);
                 }
@@ -415,7 +415,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__packf(net, left_len, f, FROM_PTR,
-                                    NULL, locale, depth + 1, order));
+                                    va, locale, depth + 1, order));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
@@ -728,7 +728,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                         *locale = (char *)*locale + lv_type;
                     }
                     NEG_RET(__unpackf(net, &struct_len_net, f, FROM_PTR,
-                                NULL, locale, depth + 1, order));
+                                va, locale, depth + 1, order));
                     *net = (char *)struct_start_net + lv_len;
                 }
                 else
@@ -742,7 +742,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__unpackf(net, left_len, f, FROM_PTR,
-                                    NULL, locale, depth + 1, order));
+                                    va, locale, depth + 1, order));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
