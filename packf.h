@@ -245,24 +245,17 @@ extern int vunpackn(void **current, int *left, void *buf, size_t n);
 extern int vpacka(void **current, int *left, char const *format, va_list arg);
 extern int vunpacka(void **current, int *left, char const *format, va_list arg);
 
-/* Return the negated line number if the result is negative */
-# ifndef NEG_RET_LN
-# define NEG_RET_LN(x) do { if ((x) < 0) return -__LINE__; } while (0)
-# endif
-
 /*
  * Stringify a macro-defined number.
  * example:
  * # define MAX_LEN 1024
- * STR_OF(MAX_LEN) expands to "1024"
+ * PACKF_STR(MAX_LEN) expands to "1024"
  */
-# ifndef STR_OF
-# define __STR_OF__(s) #s
-# define STR_OF(s) __STR_OF__(s)
-# endif
+# define PACKF_STR_(s) #s
+# define PACKF_STR(s) PACKF_STR_(s)
 
 /* Advance pointer by size bytes and decrease remaining length accordingly */
-# define PACK_PASS(ptr, left_len, size) do {        \
+# define PACKF_PASS(ptr, left_len, size) do {       \
     (ptr) = (char*)(ptr) + (size);                  \
     (left_len) = (int)(left_len) - (size);          \
 } while (0)
