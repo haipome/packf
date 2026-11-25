@@ -45,7 +45,20 @@ extern "C"
  *    ]    |    struct end
  *  space  |    spaces may be used to make the format string more readable,
  *         |    but not between -/= num and type
+ *    <    |    switch the wire byte order to little endian
+ *    >    |    switch the wire byte order to big endian (the default)
  * --------------------------------------------------------------
+ *
+ * byte order:
+ *    The wire format is big endian (network byte order) unless < is used.
+ *    < and > are tokens of their own, placed between fields like a space;
+ *    they apply to all following fields: the values of w d D f F and the
+ *    2-byte length prefix of =. (c, s, a and the 1-byte prefix of - have
+ *    no byte order; length fields in a local struct stay in host order.)
+ *    A struct inherits the byte order in effect at its [, and a switch
+ *    inside [] ends at the matching ].
+ *    example: packf(buf, sizeof(buf), "<wd", a, b);       all little endian
+ *             packf(buf, sizeof(buf), "w <d >w", a, b, c); mixed
  *
  * note:
  * 1. When - or = is present, it denotes an LV (len + value) field;

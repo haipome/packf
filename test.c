@@ -378,6 +378,172 @@ static void test_lv_count_width(void)
     printf("lv count width: ok\n");
 }
 
+# pragma pack(1)
+struct le_pair
+{
+    uint16_t a;
+    uint16_t b;
+};
+
+struct le_lv
+{
+    uint16_t len;
+    uint16_t v;
+};
+# pragma pack()
+
+/* '<' switches the wire byte order to little endian, '>' back to big
+ * endian. Wire bytes are asserted directly so the checks hold on any host. */
+static void test_little_endian(void)
+{
+    uint8_t buf[64];
+    int len, r;
+
+    /* scalars */
+    {
+        static const uint8_t expect[] = {
+            0x02, 0x01,
+            0x06, 0x05, 0x04, 0x03,
+            0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07,
+        };
+        uint16_t w = 0;
+        uint32_t d = 0;
+        uint64_t D = 0;
+
+        len = packf(buf, sizeof(buf), "<wdD", 0x0102, 0x03040506,
+                (int64_t)0x0708090A0B0C0D0ELL);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        r = unpackf(buf, (size_t)len, "<wdD", &w, &d, &D);
+        assert(r == len);
+        assert(w == 0x0102 && d == 0x03040506);
+        assert(D == 0x0708090A0B0C0D0EULL);
+    }
+
+    /* switching back and forth inside one format */
+    {
+        static const uint8_t expect[] = {
+            0x01, 0x02, 0x02, 0x01, 0x01, 0x02,
+        };
+        uint16_t x = 0, y = 0, z = 0;
+
+        len = packf(buf, sizeof(buf), "w <w >w", 0x0102, 0x0102, 0x0102);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        r = unpackf(buf, (size_t)len, "w <w >w", &x, &y, &z);
+        assert(r == len && x == 0x0102 && y == 0x0102 && z == 0x0102);
+    }
+
+    /* float / double */
+    {
+        static const uint8_t expect[] = {
+            0x00, 0x00, 0x80, 0x3F,
+            0x3F, 0x80, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
+        };
+        float f1 = 0, f2 = 0;
+        double d1 = 0;
+
+        len = packf(buf, sizeof(buf), "<f >f <F", 1.0, 1.0, 1.0);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        r = unpackf(buf, (size_t)len, "<f >f <F", &f1, &f2, &d1);
+        assert(r == len && f1 == 1.0f && f2 == 1.0f && d1 == 1.0);
+    }
+
+    /* arrays, and the 2-byte LV length prefix follows the byte order */
+    {
+        static const uint8_t expect_le[] = {
+            0x02, 0x00, 0x02, 0x01, 0x04, 0x03,
+        };
+        static const uint8_t expect_be[] = {
+            0x00, 0x02, 0x01, 0x02, 0x03, 0x04,
+        };
+        uint16_t arr[2] = {0x0102, 0x0304}, out[4];
+        uint16_t n = 0;
+
+        len = packf(buf, sizeof(buf), "<=4w", 2, arr);
+        assert(len == (int)sizeof(expect_le));
+        assert(memcmp(buf, expect_le, sizeof(expect_le)) == 0);
+        r = unpackf(buf, (size_t)len, "<=4w", &n, out);
+        assert(r == len && n == 2);
+        assert(out[0] == 0x0102 && out[1] == 0x0304);
+
+        len = packf(buf, sizeof(buf), "=4w", 2, arr);
+        assert(len == (int)sizeof(expect_be));
+        assert(memcmp(buf, expect_be, sizeof(expect_be)) == 0);
+
+        /* 1-byte prefix and strings are not affected */
+        len = packf(buf, sizeof(buf), "<-8s", "ab");
+        assert(len == 3);
+        assert(buf[0] == 2 && buf[1] == 'a' && buf[2] == 'b');
+    }
+
+    /* a struct inherits the outer byte order; a switch inside [] does not
+     * leak out, and every array element starts from the same order */
+    {
+        static const uint8_t expect[] = {
+            0x01, 0x02, 0x04, 0x03,     /* element 0: a BE, b LE */
+            0x05, 0x06, 0x08, 0x07,     /* element 1: a BE again, b LE */
+            0x09, 0x0A,                 /* after ]: BE again */
+            0x0C, 0x0B,                 /* <[w]: inherited LE */
+        };
+        struct le_pair in[2] = {{0x0102, 0x0304}, {0x0506, 0x0708}};
+        struct le_pair out[2];
+        uint16_t one = 0x0B0C, tail = 0, one_out = 0;
+
+        len = packf(buf, sizeof(buf), "2[w <w] w <[w]", in, 0x090A, &one);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        memset(out, 0, sizeof(out));
+        r = unpackf(buf, (size_t)len, "2[w <w] w <[w]", out, &tail, &one_out);
+        assert(r == len);
+        assert(memcmp(out, in, sizeof(in)) == 0);
+        assert(tail == 0x090A && one_out == 0x0B0C);
+    }
+
+    /* LV struct: 2-byte length prefix in little endian */
+    {
+        static const uint8_t expect[] = {0x02, 0x00, 0x02, 0x01};
+        uint16_t in = 0x0102, out = 0;
+        struct le_lv s_in = {0, 0x0102}, s_out = {0, 0};
+
+        len = packf(buf, sizeof(buf), "<=[w]", &in);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        r = unpackf(buf, (size_t)len, "<=[w]", &out);
+        assert(r == len && out == 0x0102);
+
+        /* inside a struct the local length field precedes the body */
+        len = packf(buf, sizeof(buf), "<[=[w]]", &s_in);
+        assert(len == (int)sizeof(expect));
+        assert(memcmp(buf, expect, sizeof(expect)) == 0);
+
+        r = unpackf(buf, (size_t)len, "<[=[w]]", &s_out);
+        assert(r == len && s_out.len == 2 && s_out.v == 0x0102);
+    }
+
+    /* the switch is a token of its own, not part of a field */
+    {
+        uint32_t d = 0;
+        uint8_t n = 0;
+
+        assert(packf(buf, sizeof(buf), "-<d", 1, &d) == PACKF_NOT_FORMAT);
+        assert(packf(buf, sizeof(buf), "2<d", &d) == PACKF_NOT_FORMAT);
+        memset(buf, 0, sizeof(buf));
+        assert(unpackf(buf, sizeof(buf), "-<d", &n, &d) == PACKF_NOT_FORMAT);
+        /* a trailing switch is harmless */
+        assert(packf(buf, sizeof(buf), "d<", 1) == 4);
+    }
+
+    printf("little endian: ok\n");
+}
+
 int main(void)
 {
     test_roundtrip();
@@ -394,6 +560,7 @@ int main(void)
     test_lv_no_max_in_struct();
     test_stray_close_bracket();
     test_lv_count_width();
+    test_little_endian();
 
     printf("all tests passed\n");
     return 0;
