@@ -58,6 +58,10 @@ extern "C"
  *          Here 5 is the number of elements in array, 64 is the max length.
  *          This packs 21 bytes into buf (1-byte length + 20 bytes of data),
  *          and returns 21.
+ *          When unpacking, the len argument is a pointer whose type matches
+ *          the length prefix: uint8_t * for -, uint16_t * for =. Only that
+ *          many bytes are written, so do NOT pass an int *.
+ *          example: uint8_t n; unpackf(buf, len, "-64d", &n, array);
  *
  *      3): For type s, no explicit len is needed; strlen determines the length.
  *          example: packf(buf, sizeof(buf), "-128s", "damonyang");
@@ -83,6 +87,13 @@ extern "C"
  *          with '\0'. If num is absent, the length is strlen + 1.
  *          S differs from s: when num is present and the string is shorter
  *          than num, S does NOT pad with '\0'.
+ *
+ *      3): WARNING: when unpacking, a string without num ("s", "-s", "=s")
+ *          is copied with no limit on the destination size; the number of
+ *          bytes written is decided by the input data alone (up to 65536
+ *          for "=s"), like sscanf "%s". When the input is not trusted,
+ *          always give num ("-32s", "32s", "32S") so that an oversized
+ *          string is rejected with PACKF_BE_CUT_OFF.
  *
  * 3. [] denotes a struct; the argument should be a pointer to the struct.
  *      1): The struct must be defined between # pragma pack(1) and

@@ -324,6 +324,60 @@ static void test_lv_no_max_in_struct(void)
     printf("lv without max in struct: ok\n");
 }
 
+/* A ']' with no matching '[' must be reported, not treated as a
+ * successful zero-byte result that silently drops the rest of the format. */
+static void test_stray_close_bracket(void)
+{
+    uint8_t buf[16];
+    void *cur = buf;
+    int left = (int)sizeof(buf);
+    uint32_t d = 0;
+    uint16_t w = 0;
+    int r;
+
+    r = packf(buf, sizeof(buf), "d]w", 1, 2);
+    assert(r == PACKF_NOT_MATCH);
+    r = packf(buf, sizeof(buf), "]");
+    assert(r == PACKF_NOT_MATCH);
+
+    r = vpackf(&cur, &left, "d]", 1);
+    assert(r == PACKF_NOT_MATCH);
+    assert(cur == (void *)buf && left == (int)sizeof(buf));
+
+    memset(buf, 0, sizeof(buf));
+    r = unpackf(buf, sizeof(buf), "d]w", &d, &w);
+    assert(r == PACKF_NOT_MATCH);
+
+    /* Balanced brackets, including nested ones, still work. */
+    r = packf(buf, sizeof(buf), "[d[w]]", buf);
+    assert(r == 6);
+
+    printf("stray close bracket: ok\n");
+}
+
+/* On unpack, the LV count is stored with the width of the length prefix:
+ * uint8_t for '-', uint16_t for '='. */
+static void test_lv_count_width(void)
+{
+    uint8_t buf[32];
+    int32_t arr[3] = {1, 2, 3}, out[4];
+    uint8_t c8[2] = {0, 0xEE};
+    uint16_t c16[2] = {0, 0xEEEE};
+    int len, r;
+
+    len = packf(buf, sizeof(buf), "-4d", 3, arr);
+    assert(len == 1 + 12);
+    r = unpackf(buf, (size_t)len, "-4d", &c8[0], out);
+    assert(r == len && c8[0] == 3 && c8[1] == 0xEE);
+
+    len = packf(buf, sizeof(buf), "=4d", 3, arr);
+    assert(len == 2 + 12);
+    r = unpackf(buf, (size_t)len, "=4d", &c16[0], out);
+    assert(r == len && c16[0] == 3 && c16[1] == 0xEEEE);
+
+    printf("lv count width: ok\n");
+}
+
 int main(void)
 {
     test_roundtrip();
@@ -338,6 +392,8 @@ int main(void)
     test_lv_len_prefix_overflow();
     test_empty_struct_array_with_S();
     test_lv_no_max_in_struct();
+    test_stray_close_bracket();
+    test_lv_count_width();
 
     printf("all tests passed\n");
     return 0;

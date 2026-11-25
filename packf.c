@@ -347,7 +347,7 @@ static int __struct_len_locale(char const *format)
 } while (0)
 
 static int __packf(void **net, int *left_len, char const *format, \
-        int from, va_list va, void **locale)
+        int from, va_list va, void **locale, int depth)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
@@ -404,7 +404,8 @@ static int __packf(void **net, int *left_len, char const *format, \
                     struct_start_net = *net = (char *)*net + lv_type;
                     if (from == FROM_PTR)
                         *locale = (char *)*locale + lv_type;
-                    NEG_RET(__packf(net, left_len, f, FROM_PTR, NULL, locale));
+                    NEG_RET(__packf(net, left_len, f, FROM_PTR,
+                                NULL, locale, depth + 1));
                     lv_len = (char *)*net - (char *)struct_start_net;
                     PUT_LV_LEN(p_struct_len);
                 }
@@ -419,7 +420,7 @@ static int __packf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__packf(net, left_len, f, FROM_PTR,
-                                    NULL, locale));
+                                    NULL, locale, depth + 1));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
@@ -447,6 +448,9 @@ static int __packf(void **net, int *left_len, char const *format, \
 
                 break;
             case ']':
+                /* A top-level ']' has no matching '['. */
+                if (depth == 0)
+                    return PACKF_NOT_MATCH;
                 return 0;
             case 's':
             case 'S':
@@ -661,7 +665,7 @@ static int __packf(void **net, int *left_len, char const *format, \
 } while (0)
 
 static int __unpackf(void **net, int *left_len, char const *format, \
-        int from, va_list va, void **locale)
+        int from, va_list va, void **locale, int depth)
 {
     int buf_len = *left_len;
     int num, i, array_size, offset, bracket_stack, lv_len = 0;
@@ -723,7 +727,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                         *locale = (char *)*locale + lv_type;
                     }
                     NEG_RET(__unpackf(net, &struct_len_net, f, FROM_PTR,
-                                NULL, locale));
+                                NULL, locale, depth + 1));
                     *net = (char *)struct_start_net + lv_len;
                 }
                 else
@@ -737,7 +741,7 @@ static int __unpackf(void **net, int *left_len, char const *format, \
                     {
                         struct_start_locale = *locale;
                         NEG_RET(__unpackf(net, left_len, f, FROM_PTR,
-                                    NULL, locale));
+                                    NULL, locale, depth + 1));
                         struct_len_locale = (char *)*locale -
                             (char *)struct_start_locale;
                     }
@@ -765,6 +769,9 @@ static int __unpackf(void **net, int *left_len, char const *format, \
 
                 break;
             case ']':
+                /* A top-level ']' has no matching '['. */
+                if (depth == 0)
+                    return PACKF_NOT_MATCH;
                 return 0;
             case 's':
             case 'S':
@@ -942,7 +949,7 @@ int packf(void *dest, size_t max, char const *format, ...)
     left_len = (int)max;
 
     va_start(va, format);
-    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
+    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
     va_end(va);
 
     return ret;
@@ -964,7 +971,7 @@ int unpackf(void *src, size_t max, char const *format, ...)
     left_len = (int)max;
 
     va_start(va, format);
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
     va_end(va);
 
     return ret;
@@ -987,7 +994,7 @@ int vpackf(void **current, int *left, char const *format, ...)
     left_len = *left;
 
     va_start(va, format);
-    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale);
+    ret = __packf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
     va_end(va);
 
     if (ret > 0)
@@ -1016,7 +1023,7 @@ int vunpackf(void **current, int *left, char const *format, ...)
     left_len = *left;
 
     va_start(va, format);
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, va, &locale, 0);
     va_end(va);
 
     if (ret > 0)
@@ -1042,7 +1049,7 @@ int vpacka(void **current, int *left, char const *format, va_list arg)
 
     net = *current;
     left_len = *left;
-    ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale);
+    ret = __packf(&net, &left_len, format, FROM_ARG, arg, &locale, 0);
 
     if (ret > 0)
     {
@@ -1067,7 +1074,7 @@ int vunpacka(void **current, int *left, char const *format, va_list arg)
 
     net = *current;
     left_len = *left;
-    ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale);
+    ret = __unpackf(&net, &left_len, format, FROM_ARG, arg, &locale, 0);
 
     if (ret > 0)
     {
