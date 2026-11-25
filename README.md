@@ -164,6 +164,8 @@ Inside `[...]` no arguments are passed; each field maps to a member of the struc
 
 - **What the prefix counts.** Elements for number arrays and struct arrays; bytes for strings and for `-[...]`.
 - **Whether you pass a count.** Yes for number arrays, struct arrays and LV padding; no for strings and `-[...]`, where it is computed.
+- **Length members exist only inside a struct.** At the top level, `-16s` takes a plain `char *` and `-[...]` takes a pointer to the struct body itself; what you pass must **not** start with a length member, or every field is shifted by it without any error. The length read from the wire is not returned there — use `strlen` for a string, or wrap the field in a struct (`[-[...]]`) to get it in a length member.
+- **Automatic length members are written only when unpacking.** For `-16s` and `-[...]` inside a struct, packing computes the length for the wire but leaves the member in your struct untouched; unpacking stores the length declared on the wire into it.
 - **Count type differs by direction.** Packing takes an `int`; unpacking takes a pointer sized like the prefix — `uint8_t *` for `-`, `uint16_t *` for `=`. Only that many bytes are written, so never pass an `int *`.
 - **`num` on a string includes the `\0`.** `16s`, `16S` and `-16s` all hold at most 15 characters; a longer string fails with `PACKF_BE_CUT_OFF`. `num` on anything else is a plain element count.
 - **Exceeding a maximum is an error, not a truncation.** `-4d` with a count of 5, or a prefix value too large for 1 or 2 bytes, returns `PACKF_BE_CUT_OFF`.

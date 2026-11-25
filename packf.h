@@ -91,6 +91,20 @@ extern "C"
  *          declared before it but does not need to be assigned.
  *          If num is present, the behavior is the same as 2).
  *
+ *      5): The len field of 3) and 4) exists only inside a struct. There,
+ *          packing computes the length for the wire and leaves the len
+ *          field untouched; unpacking stores the length read from the wire
+ *          into it (in host byte order).
+ *          At the top level of the format there is no len field: "-128s"
+ *          takes a char *, and "-[...]" takes a pointer to the struct body
+ *          itself, which must NOT begin with a len field (every field would
+ *          be shifted by it, without any error). The length read from the
+ *          wire is not returned to the caller in that case.
+ *          example: struct body { int32_t x; };
+ *                   struct outer { uint8_t len; struct body b; };
+ *                   unpackf(buf, n, "-[d]", &body);     length not returned
+ *                   unpackf(buf, n, "[-[d]]", &outer);  outer.len is set
+ *
  * 2. When neither - nor = is present:
  *      1): For types acwdD[fF, when num is present it denotes an array;
  *          the argument should be an array or pointer.
